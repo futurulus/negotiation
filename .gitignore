@@ -1,0 +1,9 @@
+runs/
+data/
+.cache/
+activate
+activate_py2
+tensorflow
+!third-party/tensorflow
+__pycache__
+*.pyc
