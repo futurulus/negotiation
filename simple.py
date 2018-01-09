@@ -9,24 +9,20 @@ python simple.py -R runs/simple_unicode \
 from stanza.research import config
 config.redirect_output()
 
-import argparse
 import datetime
 import gzip
 from itertools import islice
 import json
 
-import torch as th
-
 from stanza.monitoring import progress
-from stanza.research import evaluate, output, iterators, learner
+from stanza.research import evaluate, output, iterators
 from stanza.research.instance import Instance
 
 import metrics
-import neural
-import seq2seq
 import thutils
-import vectorizers
 import tokenizers
+
+from seq2seq import SimpleSeq2SeqLearner
 
 parser = config.get_options_parser()
 parser.add_argument('--device', default='',
@@ -66,107 +62,6 @@ parser.add_argument('--output_eval_data', type=config.boolean, default=False,
                          '`eval_size`) as a JSON-lines file in the output directory.')
 parser.add_argument('--progress_tick', type=int, default=10,
                     help='The number of seconds between logging progress updates.')
-
-
-class SimpleSeq2SeqLearner(learner.Learner):
-    def __init__(self):
-        super(SimpleSeq2SeqLearner, self).__init__()
-        self.get_options()
-
-    @property
-    def num_params(self):
-        total = 0
-        for p in self.model.module.parameters():
-            total += th.numel(p.data)
-        return total
-
-    def get_options(self):
-        if not hasattr(self, 'options'):
-            options = config.options()
-            self.options = argparse.Namespace(**options.__dict__)
-
-    def train(self, training_instances, validation_instances=None, metrics=None):
-        if not hasattr(self, 'model'):
-            self.model = self.build_model(self.init_vectorizer(training_instances))
-
-        minibatches = iterators.gen_batches(training_instances, self.options.batch_size)
-        progress.start_task('Epoch', self.options.train_epochs)
-        for epoch in range(self.options.train_epochs):
-            progress.progress(epoch)
-
-            progress.start_task('Minibatch', len(minibatches))
-            for b, batch in enumerate(minibatches):
-                progress.progress(b)
-                self.model.train([self.instance_to_pair(inst) for inst in batch])
-            progress.end_task()
-
-            self.validate_and_log(validation_instances, metrics,
-                                  self.model.summary_writer, epoch=epoch)
-        progress.end_task()
-
-    def init_vectorizer(self, training_instances):
-        vec = vectorizers.Seq2SeqVectorizer()
-        vec.add((['<s>', '</s>'], ['<s>', '</s>']))
-
-        progress.start_task('Vectorizer instance', len(training_instances))
-        for i, inst in enumerate(training_instances):
-            progress.progress(i)
-            vec.add(self.instance_to_pair(inst))
-        progress.end_task()
-
-        return vec
-
-    def instance_to_pair(self, inst):
-        wrap = lambda seq: ['<s>'] + seq + ['</s>']
-        tokenize, _ = tokenizers.TOKENIZERS[self.options.tokenizer]
-        return (wrap(tokenize(inst.input)), wrap(tokenize(inst.output)))
-
-    def build_model(self, vectorizer):
-        delimiters = tuple(int(i) for i in vectorizer.tgt_vec.vectorize(['<s>', '</s>'])[0][:2])
-        module = seq2seq.Seq2Seq(src_vocab=vectorizer.vocab_size()[0],
-                                 tgt_vocab=vectorizer.vocab_size()[1],
-                                 cell_size=self.options.cell_size,
-                                 num_layers=self.options.num_layers,
-                                 beam_size=self.options.beam_size,
-                                 max_len=self.options.max_length,
-                                 embed_size=self.options.embed_size,
-                                 dropout=self.options.dropout,
-                                 delimiters=delimiters,
-                                 monitor_activations=self.options.monitor_activations)
-        model = neural.TorchModel(
-            module=module,
-            loss=seq2seq.MeanScoreLoss(),
-            optimizer=th.optim.Adagrad,
-            optimizer_params={'lr': self.options.learning_rate},
-            vectorizer=vectorizer,
-        )
-        return model
-
-    def validate_and_log(self, validation_instances, metrics, writer, epoch):
-        validation_results = self.validate(validation_instances, metrics, iteration=epoch)
-        if writer is not None:
-            for key, value in validation_results.items():
-                tag = 'val/' + key.split('.', 1)[1].replace('.', '/')
-                writer.log_scalar(epoch, tag, value)
-
-    def predict_and_score(self, eval_instances, random=False, verbosity=0):
-        predictions = []
-        scores = []
-
-        minibatches = iterators.gen_batches(eval_instances, self.options.batch_size)
-        tokenize, detokenize = tokenizers.TOKENIZERS[self.options.tokenizer]
-
-        progress.start_task('Eval minibatch', len(minibatches))
-        for b, batch in enumerate(minibatches):
-            progress.progress(b)
-            outputs_batch, scores_batch = self.model.eval([self.instance_to_pair(inst)
-                                                           for inst in batch])
-            preds_batch = outputs_batch['sample' if random else 'beam']
-            detokenized = [detokenize(s) for s in preds_batch]
-            predictions.extend(detokenized)
-            scores.extend(scores_batch)
-        progress.end_task()
-        return predictions, scores
 
 
 def dataset(filename):
