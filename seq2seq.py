@@ -78,7 +78,7 @@ class SeqDecoder(th.nn.Module):
         a.log_softmax, _ = self.decode(tgt_indices[:, :-1], enc_h_out, enc_c_out, monitor=True)
 
         a.log_prob_token = index_sequence(a.log_softmax, tgt_indices.data[:, 1:])
-        a.mask = (lrange(a.log_prob_token.size()[1])[None, :] < src_lengths.data[:, None]).float()
+        a.mask = (lrange(a.log_prob_token.size()[1])[None, :] < tgt_lengths.data[:, None]).float()
         a.log_prob_masked = a.log_prob_token * th.autograd.Variable(a.mask)
         a.log_prob_seq = a.log_prob_masked.sum(1)
         score = a.log_prob_seq
@@ -257,7 +257,7 @@ class BeamPredictor(th.nn.Module):
             '%s != %s' % (beam_lengths.size(), (batch_size, beam_size))
 
         # Compute updated scores
-        done_mask = (beam_lengths == length - 1).type(th.FloatTensor)[:, :, None]
+        done_mask = (beam_lengths == length - 1).type_as(word_scores)[:, :, None]
         new_scores = (word_scores * done_mask +
                       beam_scores[:, :, np.newaxis]).view(batch_size, beam_size * vocab_size)
         # Get top k scores and their indices
@@ -279,7 +279,7 @@ class BeamPredictor(th.nn.Module):
         new_indices[(new_beam_lengths != length - 1)] = self.delimiters[1]
         # Add one to the beam lengths that are not done
         new_beam_lengths += ((new_indices != self.delimiters[1]) *
-                             (new_beam_lengths == length - 1)).type(th.LongTensor)
+                             (new_beam_lengths == length - 1)).type_as(beam_lengths)
         # Append new token indices
         new_beam = th.cat([beam, new_indices[:, :, None]], dim=2)
 
@@ -343,7 +343,7 @@ class Sampler(BeamPredictor):
         )[:, :, 0]
         # Compute updated scores
         new_word_scores = index_sequence(word_scores, new_indices.data)
-        done_mask = (beam_lengths == length - 1).type(th.FloatTensor)[:, :]
+        done_mask = (beam_lengths == length - 1).type_as(new_word_scores)[:, :]
         new_beam_scores = beam_scores + new_word_scores * done_mask
 
         # Get previous done status and update it with
@@ -353,7 +353,7 @@ class Sampler(BeamPredictor):
         new_indices[(new_beam_lengths != length - 1)] = self.delimiters[1]
         # Add one to the beam lengths that are not done
         new_beam_lengths += ((new_indices != self.delimiters[1]) *
-                             (new_beam_lengths == length - 1)).type(th.LongTensor)
+                             (new_beam_lengths == length - 1)).type_as(beam_lengths)
         # Append new token indices
         new_beam = th.cat([beam, new_indices[:, :, None]], dim=2)
 
