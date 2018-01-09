@@ -75,8 +75,10 @@ class SimpleSeq2SeqLearner(learner.Learner):
 
     @property
     def num_params(self):
-        # TODO
-        return 0
+        total = 0
+        for p in self.model.module.parameters():
+            total += th.numel(p.data)
+        return total
 
     def get_options(self):
         if not hasattr(self, 'options'):
