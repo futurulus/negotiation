@@ -101,7 +101,7 @@ def main():
             if not hasattr(options, 'verbosity') or options.verbosity >= 4:
                 print('Validation set size: {}'.format(len(validation_data)))
 
-        eval_data = SG(lambda: islice(dataset(options.eval_file), 0, nin(options.train_size)),
+        eval_data = SG(lambda: islice(dataset(options.eval_file), 0, nin(options.eval_size)),
                        length=None)
         if not hasattr(options, 'verbosity') or options.verbosity >= 4:
             print('Eval set size: {}'.format(len(eval_data)))
