@@ -25,14 +25,14 @@ def character_detokenizer(tokens, lower=False):
     return ''.join(tokens)
 
 
-def basic_unigram_tokenizer(s, lower=True):
+def basic_unigram_tokenizer(s, lower=False):
     words = WORD_RE.findall(s)
     if lower:
         words = [w.lower() for w in words]
     return words
 
 
-def basic_unigram_detokenizer(tokens, lower=True):
+def basic_unigram_detokenizer(tokens, lower=False):
     tokens_spaced = []
     title = True
     for i, token in enumerate(tokens):
@@ -44,13 +44,13 @@ def basic_unigram_detokenizer(tokens, lower=True):
     return ''.join(tokens_spaced)
 
 
-def whitespace_tokenizer(s, lower=True):
+def whitespace_tokenizer(s, lower=False):
     if lower:
         s = s.lower()
     return s.split()
 
 
-def whitespace_detokenizer(tokens, lower=True):
+def whitespace_detokenizer(tokens, lower=False):
     tokens_capitalized = []
     title = True
     for i, token in enumerate(tokens):
