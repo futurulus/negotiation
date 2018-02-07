@@ -14,6 +14,11 @@ from thutils import lrange, index_sequence, maybe_cuda as cu
 
 rng = get_rng()
 
+CELLS = {
+    name: getattr(th.nn, name)
+    for name in ['RNN', 'LSTM', 'GRU']
+}
+
 parser = config.get_options_parser()
 parser.add_argument('--batch_size', type=int, default=128,
                     help='Batch size for training neural models.')
@@ -23,6 +28,8 @@ parser.add_argument('--cell_size', type=int, default=100,
                     help='Recurrent cell size for the encoder and decoder.')
 parser.add_argument('--learning_rate', type=float, default=0.01,
                     help='Batch size for training neural models.')
+parser.add_argument('--rnn_cell', choices=CELLS, default='LSTM',
+                    help='Type of recurrent cell to use for the encoder and decoder.')
 parser.add_argument('--num_layers', type=int, default=1,
                     help='Number of recurrent layers for the encoder and decoder.')
 parser.add_argument('--embed_size', type=int, default=50,
@@ -31,6 +38,8 @@ parser.add_argument('--beam_size', type=int, default=5,
                     help='Number of candidates to keep at each step of beam decoding.')
 parser.add_argument('--max_length', type=int, default=100,
                     help='Maximum length of predicted output in decoding and sampling.')
+parser.add_argument('--bidirectional', type=config.boolean, default=False,
+                    help='If True, use a bidirectional recurrent layer for encoding.')
 
 
 class SimpleSeq2SeqLearner(learner.Learner):
@@ -96,6 +105,8 @@ class SimpleSeq2SeqLearner(learner.Learner):
                          max_len=self.options.max_length,
                          embed_size=self.options.embed_size,
                          dropout=self.options.dropout,
+                         rnn_cell=self.options.rnn_cell,
+                         bidirectional=self.options.bidirectional,
                          delimiters=delimiters,
                          monitor_activations=self.options.monitor_activations)
         model = neural.TorchModel(
@@ -146,6 +157,7 @@ class SeqDecoder(th.nn.Module):
                  embed_size,
                  dropout,
                  delimiters,
+                 rnn_cell='LSTM',
                  num_layers=1,
                  beam_size=1,
                  max_len=None,
@@ -159,11 +171,12 @@ class SeqDecoder(th.nn.Module):
         self.activations = neural.Activations()
 
         self.dec_embedding = th.nn.Embedding(tgt_vocab, embed_size)
-        self.decoder = th.nn.LSTM(input_size=embed_size,
-                                  hidden_size=cell_size,
-                                  num_layers=num_layers,
-                                  dropout=dropout,
-                                  batch_first=True)
+        cell = CELLS[rnn_cell]
+        self.decoder = cell(input_size=embed_size,
+                            hidden_size=cell_size,
+                            num_layers=num_layers,
+                            dropout=dropout,
+                            batch_first=True)
         self.output = th.nn.Linear(cell_size, tgt_vocab)
         self.beam_predictor = BeamPredictor(self.decode,
                                             beam_size=beam_size,
@@ -174,13 +187,13 @@ class SeqDecoder(th.nn.Module):
     def forward(self, src_indices, src_lengths, tgt_indices, tgt_lengths):
         a = self.activations
 
-        enc_h_out, enc_c_out = self.encode(src_indices, src_lengths)
+        enc_state = self.encode(src_indices, src_lengths)
 
         # predict = (a.out.max(2)[1], tgt_lengths)
-        beam, beam_lengths = self.beam_predictor(enc_h_out, enc_c_out)
-        sample, sample_lengths = self.sampler(enc_h_out, enc_c_out)
+        beam, beam_lengths = self.beam_predictor(enc_state)
+        sample, sample_lengths = self.sampler(enc_state)
 
-        a.log_softmax, _ = self.decode(tgt_indices[:, :-1], enc_h_out, enc_c_out, monitor=True)
+        a.log_softmax, _ = self.decode(tgt_indices[:, :-1], enc_state, monitor=True)
 
         a.log_prob_token = index_sequence(a.log_softmax, tgt_indices.data[:, 1:])
         a.mask = (lrange(a.log_prob_token.size()[1])[None, :] < tgt_lengths.data[:, None]).float()
@@ -197,17 +210,21 @@ class SeqDecoder(th.nn.Module):
             'sample': (sample[:, 0, :], sample_lengths[:, 0]),
         }, score
 
-    def decode(self, tgt_indices, enc_h_out, enc_c_out, monitor=False):
+    def decode(self, tgt_indices, enc_state, monitor=False):
         if monitor:
             a = self.activations
         else:
             a = neural.Activations()
 
         prev_embed = self.dec_embedding(tgt_indices)
-        a.dec_out, (dec_h_out, dec_c_out) = self.decoder(prev_embed, (enc_h_out, enc_c_out))
+        if len(enc_state) == 1:
+            enc_state = enc_state[0]
+        a.dec_out, dec_state = self.decoder(prev_embed, enc_state)
         a.out = self.output(a.dec_out)
         log_softmax = th.nn.LogSoftmax()(a.out.transpose(2, 0)).transpose(2, 0)
-        return log_softmax, (dec_h_out, dec_c_out)
+        if not isinstance(dec_state, tuple):
+            dec_state = (dec_state,)
+        return log_softmax, dec_state
 
 
 class Seq2Seq(SeqDecoder):
@@ -217,22 +234,32 @@ class Seq2Seq(SeqDecoder):
                  embed_size,
                  dropout,
                  delimiters,
+                 rnn_cell='LSTM',
                  num_layers=1,
                  beam_size=1,
+                 bidirectional=False,
                  max_len=None,
                  monitor_activations=True):
         super(Seq2Seq, self).__init__(tgt_vocab=tgt_vocab,
                                       cell_size=cell_size, embed_size=embed_size,
                                       dropout=dropout, num_layers=num_layers,
+                                      rnn_cell=rnn_cell,
                                       delimiters=delimiters,
                                       beam_size=beam_size, max_len=max_len,
                                       monitor_activations=monitor_activations)
         self.enc_embedding = th.nn.Embedding(src_vocab, embed_size)
-        self.encoder = th.nn.LSTM(input_size=embed_size,
-                                  hidden_size=cell_size,
-                                  num_layers=num_layers,
-                                  dropout=dropout,
-                                  batch_first=True)
+        cell = CELLS[rnn_cell]
+        self.use_c = (rnn_cell == 'LSTM')
+        if cell_size % 2 != 0:
+            raise ValueError('cell_size must be even for bidirectional encoder '
+                             '(instead got {})'.format(cell_size))
+        self.num_directions = 2 if bidirectional else 1
+        self.encoder = cell(input_size=embed_size,
+                            hidden_size=cell_size // self.num_directions,
+                            num_layers=num_layers,
+                            dropout=dropout,
+                            batch_first=True,
+                            bidirectional=bidirectional)
         self.h_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
         self.c_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
 
@@ -245,15 +272,34 @@ class Seq2Seq(SeqDecoder):
         init_var = th.autograd.Variable(cu(th.FloatTensor([1.0])))
         batch_size = src_indices.size()[0]
         h_init = (self.h_init(init_var)
-                      .view(self.num_layers, 1, self.cell_size)
+                      .view(self.num_layers * self.num_directions, 1,
+                            self.cell_size // self.num_directions)
                       .repeat(1, batch_size, 1))
-        c_init = (self.c_init(init_var)
-                      .view(self.num_layers, 1, self.cell_size)
-                      .repeat(1, batch_size, 1))
-        a.enc_out, (a.enc_h_out, a.enc_c_out) = self.encoder(in_embed, (h_init, c_init))
-        a.enc_out = a.enc_out[:, src_lengths.data - 1, :]
+        if self.use_c:
+            c_init = (self.c_init(init_var)
+                          .view(self.num_layers * self.num_directions, 1,
+                                self.cell_size // self.num_directions)
+                          .repeat(1, batch_size, 1))
+            init = (h_init, c_init)
+        else:
+            init = h_init
+        a.enc_out, enc_state = self.encoder(in_embed, init)
+        if self.use_c:
+            (a.enc_h_out, a.enc_c_out) = enc_state
+            return (self.concat_directions(a.enc_h_out), self.concat_directions(a.enc_c_out))
+        else:
+            a.enc_h_out = enc_state
+            return (self.concat_directions(a.enc_h_out),)
 
-        return a.enc_h_out, a.enc_c_out
+    def concat_directions(self, out):
+        if self.num_directions == 1:
+            return out
+        else:
+            out = (out.view(out.size()[0] // self.num_directions,
+                            self.num_directions, out.size()[1], out.size()[2])
+                      .transpose(1, 2).contiguous())
+            assert out.size()[2] == self.num_directions, out.size()
+            return out.view(out.size()[0], out.size()[1], out.size()[2] * out.size()[3])
 
 
 class Conv2Seq(SeqDecoder):
@@ -263,13 +309,16 @@ class Conv2Seq(SeqDecoder):
                  embed_size,
                  dropout,
                  delimiters,
+                 rnn_cell='LSTM',
                  num_layers=1,
                  beam_size=1,
+                 bidirectional='ignored',
                  max_len=None,
                  monitor_activations=True):
         super(Conv2Seq, self).__init__(tgt_vocab=tgt_vocab,
                                        cell_size=cell_size, embed_size=embed_size,
                                        dropout=dropout, num_layers=num_layers,
+                                       rnn_cell=rnn_cell,
                                        delimiters=delimiters,
                                        beam_size=beam_size, max_len=max_len,
                                        monitor_activations=monitor_activations)
@@ -309,20 +358,18 @@ class BeamPredictor(th.nn.Module):
         self.max_len = max_len
         self.delimiters = delimiters
 
-    def forward(self, enc_h_out, enc_c_out):
-        assert len(enc_h_out.size()) == 3, enc_h_out.size()
-        assert len(enc_c_out.size()) == 3, enc_c_out.size()
-        num_layers, batch_size, h_size = enc_h_out.size()
-        '''
-        if batch_size == 7:
-            import pdb
-            pdb.set_trace()
-        '''
-        assert enc_c_out.size()[:2] == (num_layers, batch_size), enc_c_out.size()
-        c_size = enc_c_out.size()[2]
-
-        h = enc_h_out[:, :, None, :].expand(num_layers, batch_size, self.beam_size, h_size)
-        c = enc_c_out[:, :, None, :].expand(num_layers, batch_size, self.beam_size, c_size)
+    def forward(self, enc_state):
+        assert len(enc_state[0].size()) == 3, enc_state[0].size()
+        num_layers, batch_size, h_size = enc_state[0].size()
+        state_sizes = []
+        state = []
+        for enc_c in enc_state:
+            assert len(enc_c.size()) == 3, enc_c.size()
+            assert enc_c.size()[:2] == (num_layers, batch_size), enc_c.size()
+            c_size = enc_c.size()[2]
+            state_sizes.append(c_size)
+            state.append(enc_c[:, :, None, :].expand(num_layers, batch_size,
+                                                     self.beam_size, c_size))
 
         ravel = lambda x: x.contiguous().view(*tuple(x.size()[:-2]) +
                                               (batch_size, self.beam_size, x.size()[-1]))
@@ -337,9 +384,9 @@ class BeamPredictor(th.nn.Module):
         for length in itertools.count(1):
             last_tokens = beam[:, :, -1:]
             assert last_tokens.size() == (batch_size, self.beam_size, 1), last_tokens.size()
-            word_scores, (h, c) = self.decode_fn(unravel(last_tokens),
-                                                 unravel(h), unravel(c))
-            word_scores, h, c = ravel(word_scores[:, 0, :]), ravel(h), ravel(c)
+            word_scores, state = self.decode_fn(unravel(last_tokens),
+                                                tuple(unravel(c) for c in state))
+            word_scores, state = ravel(word_scores[:, 0, :]), tuple(ravel(c) for c in state)
             assert word_scores.size()[:2] == (batch_size, self.beam_size), word_scores.size()
             beam, beam_scores, beam_lengths = self.step(word_scores, length,
                                                         beam, beam_scores, beam_lengths)
