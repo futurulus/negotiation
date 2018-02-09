@@ -125,23 +125,26 @@ class SimpleSeq2SeqLearner(learner.Learner):
                 tag = 'val/' + key.split('.', 1)[1].replace('.', '/')
                 writer.log_scalar(epoch, tag, value)
 
-    def predict_and_score(self, eval_instances, random=False, verbosity=0):
+    def predict_and_score(self, eval_instances, random=False, verbosity=4):
         predictions = []
         scores = []
 
         minibatches = iterators.gen_batches(eval_instances, self.options.batch_size)
         tokenize, detokenize = tokenizers.TOKENIZERS[self.options.tokenizer]
 
-        progress.start_task('Eval minibatch', len(minibatches))
+        if verbosity > 2:
+            progress.start_task('Eval minibatch', len(minibatches))
         for b, batch in enumerate(minibatches):
-            progress.progress(b)
+            if verbosity > 2:
+                progress.progress(b)
             outputs_batch, scores_batch = self.model.eval([self.instance_to_pair(inst)
                                                            for inst in batch])
             preds_batch = outputs_batch['sample' if random else 'beam']
             detokenized = [detokenize(s) for s in preds_batch]
             predictions.extend(detokenized)
             scores.extend(scores_batch)
-        progress.end_task()
+        if verbosity > 2:
+            progress.end_task()
         return predictions, scores
 
 
