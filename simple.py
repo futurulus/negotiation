@@ -7,7 +7,7 @@ python simple.py -R runs/simple_unicode \
                  --tokenizer character
 '''
 from stanza.research import config
-config.redirect_output()
+config.redirect_output()  # NOQA: imports not at top of file
 
 import datetime
 import gzip
