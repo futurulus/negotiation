@@ -18,11 +18,10 @@ from stanza.monitoring import progress
 from stanza.research import evaluate, output, iterators
 from stanza.research.instance import Instance
 
+import learners
 import metrics
 import thutils
 import tokenizers
-
-from seq2seq import SimpleSeq2SeqLearner
 
 parser = config.get_options_parser()
 parser.add_argument('--device', default='',
@@ -32,6 +31,8 @@ parser.add_argument('--load', metavar='MODEL_FILE', default='',
                     help='If provided, skip training and instead load a pretrained model '
                          'from the specified path. If None or an empty string, train a '
                          'new model.')
+parser.add_argument('--learner', choices=learners.LEARNERS, default='SimpleSeq2SeqLearner',
+                    help='Class of the model to train.')
 parser.add_argument('--train_file', help='JSON file giving training sequences.')
 parser.add_argument('--validation_file', default='',
                     help='JSON file giving validation sequences.')
@@ -106,7 +107,7 @@ def main():
         if not hasattr(options, 'verbosity') or options.verbosity >= 4:
             print('Eval set size: {}'.format(len(eval_data)))
 
-        learner = SimpleSeq2SeqLearner()
+        learner = learners.new(options.learner)
 
         m = [metrics.METRICS[m] for m in options.metrics]
 
