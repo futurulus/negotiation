@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 r'''
-python simple.py -R runs/simple_unicode \
-                 --train_file data/unicode_train.json \
-                 --validation_file data/unicode_val.json \
-                 --eval_file data/unicode_dev.json \
-                 --tokenizer character
+python run_experiment.py -R runs/simple_unicode \
+                         --train_file data/unicode_train.json \
+                         --validation_file data/unicode_val.json \
+                         --eval_file data/unicode_dev.json \
+                         --tokenizer character
 '''
 from stanza.research import config
 config.redirect_output()  # NOQA: imports not at top of file
