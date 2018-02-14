@@ -91,13 +91,14 @@ class SimpleSeq2SeqLearner(learner.Learner):
         return vec
 
     def instance_to_pair(self, inst):
-        wrap = lambda seq: ['<s>'] + seq + ['</s>']
+        def wrap(seq):
+            return ['<s>'] + seq + ['</s>']
         tokenize, _ = tokenizers.TOKENIZERS[self.options.tokenizer]
         return (wrap(tokenize(inst.input)), wrap(tokenize(inst.output)))
 
     def build_model(self, vectorizer):
         delimiters = tuple(int(i) for i in vectorizer.tgt_vec.vectorize(['<s>', '</s>'])[0][:2])
-        module = Seq2Seq(src_vocab=vectorizer.vocab_size()[0],
+        module = RNN2RNN(src_vocab=vectorizer.vocab_size()[0],
                          tgt_vocab=vectorizer.vocab_size()[1],
                          cell_size=self.options.cell_size,
                          num_layers=self.options.num_layers,
@@ -148,12 +149,225 @@ class SimpleSeq2SeqLearner(learner.Learner):
         return predictions, scores
 
 
-class MeanScoreLoss(th.nn.Module):
-    def forward(self, predict, score):
-        return -score.mean()
+class Seq2Seq(th.nn.Module):
+    def __init__(self, encoder, decoder):
+        super(Seq2Seq, self).__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+
+        if not hasattr(self, 'activations'):
+            self.activations = neural.Activations()
+
+    def forward(self, src_indices, src_lengths, tgt_indices, tgt_lengths):
+        enc_state = self.encoder(src_indices, src_lengths)
+        return self.decoder(enc_state, tgt_indices, tgt_lengths)
 
 
-class SeqDecoder(th.nn.Module):
+class RNN2RNN(Seq2Seq):
+    def __init__(self,
+                 src_vocab, tgt_vocab,
+                 cell_size,
+                 embed_size,
+                 dropout,
+                 delimiters,
+                 rnn_cell='LSTM',
+                 num_layers=1,
+                 beam_size=1,
+                 bidirectional=False,
+                 max_len=None,
+                 monitor_activations=True):
+        self.activations = neural.Activations()
+        if monitor_activations:
+            child_activations = self.activations
+        else:
+            child_activations = None
+
+        encoder = RNNEncoder(src_vocab=src_vocab,
+                             cell_size=cell_size, embed_size=embed_size,
+                             dropout=dropout, num_layers=num_layers,
+                             rnn_cell=rnn_cell,
+                             delimiters=delimiters,
+                             activations=child_activations)
+        decoder = RNNDecoder(tgt_vocab=tgt_vocab,
+                             cell_size=cell_size, embed_size=embed_size,
+                             dropout=dropout, num_layers=num_layers,
+                             rnn_cell=rnn_cell,
+                             delimiters=delimiters,
+                             beam_size=beam_size, max_len=max_len,
+                             activations=child_activations)
+        super(RNN2RNN, self).__init__(encoder, decoder)
+
+
+class Conv2RNN(Seq2Seq):
+    def __init__(self,
+                 src_vocab, tgt_vocab,
+                 cell_size,
+                 embed_size,
+                 dropout,
+                 delimiters,
+                 rnn_cell='LSTM',
+                 num_layers=1,
+                 beam_size=1,
+                 bidirectional='ignored',
+                 max_len=None,
+                 monitor_activations=True):
+        self.activations = neural.Activations()
+        if monitor_activations:
+            child_activations = self.activations
+        else:
+            child_activations = None
+
+        encoder = ConvEncoder(src_vocab=src_vocab,
+                              cell_size=cell_size, embed_size=embed_size,
+                              dropout=dropout, num_layers=num_layers,
+                              rnn_cell=rnn_cell,
+                              delimiters=delimiters,
+                              activations=child_activations)
+        decoder = RNNDecoder(tgt_vocab=tgt_vocab,
+                             cell_size=cell_size, embed_size=embed_size,
+                             dropout=dropout, num_layers=num_layers,
+                             rnn_cell=rnn_cell,
+                             delimiters=delimiters,
+                             beam_size=beam_size, max_len=max_len,
+                             activations=child_activations)
+        super(RNN2RNN, self).__init__(encoder, decoder)
+
+
+class RNNEncoder(th.nn.Module):
+    def __init__(self,
+                 src_vocab,
+                 cell_size,
+                 embed_size,
+                 dropout,
+                 delimiters,
+                 rnn_cell='LSTM',
+                 num_layers=1,
+                 bidirectional=False,
+                 activations=None):
+        super(RNNEncoder, self).__init__()
+
+        self.monitor_activations = (activations is not None)
+        if isinstance(activations, neural.Activations):
+            self.activations = activations
+        else:
+            self.activations = neural.Activations()
+
+        self.enc_embedding = th.nn.Embedding(src_vocab, embed_size)
+        cell = CELLS[rnn_cell]
+        self.use_c = (rnn_cell == 'LSTM')
+        if cell_size % 2 != 0:
+            raise ValueError('cell_size must be even for bidirectional encoder '
+                             '(instead got {})'.format(cell_size))
+        self.num_directions = 2 if bidirectional else 1
+        self.num_layers = num_layers
+        self.cell_size = cell_size
+        self.cell = cell(input_size=embed_size,
+                         hidden_size=cell_size // self.num_directions,
+                         num_layers=num_layers,
+                         dropout=dropout,
+                         batch_first=True,
+                         bidirectional=bidirectional)
+        self.h_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
+        self.c_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
+
+    def forward(self, src_indices, src_lengths):
+        a = self.activations
+
+        # TODO: PackedSequence?
+        max_len = src_lengths.data.max()
+        in_embed = self.enc_embedding(src_indices[:, :max_len])
+        init_var = th.autograd.Variable(cu(th.FloatTensor([1.0])))
+        batch_size = src_indices.size()[0]
+        h_init = (self.h_init(init_var)
+                      .view(self.num_layers * self.num_directions, 1,
+                            self.cell_size // self.num_directions)
+                      .repeat(1, batch_size, 1))
+        if self.use_c:
+            c_init = (self.c_init(init_var)
+                          .view(self.num_layers * self.num_directions, 1,
+                                self.cell_size // self.num_directions)
+                          .repeat(1, batch_size, 1))
+            init = (h_init, c_init)
+        else:
+            init = h_init
+        a.enc_out, enc_state = self.cell(in_embed, init)
+        if self.use_c:
+            (a.enc_h_out, a.enc_c_out) = enc_state
+            result = (self.concat_directions(a.enc_h_out), self.concat_directions(a.enc_c_out))
+        else:
+            a.enc_h_out = enc_state
+            result = (self.concat_directions(a.enc_h_out),)
+
+        if not self.monitor_activations:
+            # Free up memory
+            a.__dict__.clear()
+
+        return result
+
+    def concat_directions(self, out):
+        if self.num_directions == 1:
+            return out
+        else:
+            out = (out.view(out.size()[0] // self.num_directions,
+                            self.num_directions, out.size()[1], out.size()[2])
+                      .transpose(1, 2).contiguous())
+            assert out.size()[2] == self.num_directions, out.size()
+            return out.view(out.size()[0], out.size()[1], out.size()[2] * out.size()[3])
+
+
+class ConvEncoder(th.nn.Module):
+    def __init__(self,
+                 src_vocab,
+                 cell_size,
+                 embed_size,
+                 dropout,
+                 delimiters,
+                 rnn_cell='LSTM',
+                 num_layers=1,
+                 bidirectional='ignored',
+                 activations=None):
+        super(ConvEncoder, self).__init__()
+
+        self.monitor_activations = (activations is not None)
+        if isinstance(activations, neural.Activations):
+            self.activations = activations
+        else:
+            self.activations = neural.Activations()
+
+        self.enc_embedding = th.nn.Embedding(src_vocab, cell_size)
+        self.conv = th.nn.Conv1d(in_channels=cell_size, out_channels=cell_size, kernel_size=2)
+        self.c_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
+        self.nonlinearity = th.nn.Tanh()
+
+    def forward(self, src_indices, src_lengths):
+        a = self.activations
+
+        # TODO: PackedSequence?
+        batch_size = src_indices.size()[0]
+        max_len = src_lengths.data.max()
+        a.in_embed = self.enc_embedding(src_indices[:, :max_len])
+        conv_stack = [a.in_embed.transpose(1, 2)]
+        for i in range(max_len - 1):
+            conv_stack.append(self.conv(self.nonlinearity(conv_stack[-1])))
+        a.conv_repr = (th.stack([conv_stack[n - 1][j, :, 0]
+                                 for j, n in enumerate(src_lengths.data)], 0)
+                         .view(1, batch_size, self.cell_size)
+                         .repeat(self.num_layers, 1, 1))
+        init_var = th.autograd.Variable(cu(th.FloatTensor([1.0])))
+        c_init = (self.c_init(init_var)
+                      .view(self.num_layers, 1, self.cell_size)
+                      .repeat(1, batch_size, 1))
+
+        result = a.conv_repr, c_init
+
+        if not self.monitor_activations:
+            # Free up memory
+            a.__dict__.clear()
+
+        return result
+
+
+class RNNDecoder(th.nn.Module):
     def __init__(self,
                  tgt_vocab,
                  cell_size,
@@ -164,14 +378,14 @@ class SeqDecoder(th.nn.Module):
                  num_layers=1,
                  beam_size=1,
                  max_len=None,
-                 monitor_activations=True):
-        super(SeqDecoder, self).__init__()
+                 activations=None):
+        super(RNNDecoder, self).__init__()
 
-        self.cell_size = cell_size
-        self.num_layers = num_layers
-        self.monitor_activations = monitor_activations
-
-        self.activations = neural.Activations()
+        self.monitor_activations = (activations is not None)
+        if isinstance(activations, neural.Activations):
+            self.activations = activations
+        else:
+            self.activations = neural.Activations()
 
         self.dec_embedding = th.nn.Embedding(tgt_vocab, embed_size)
         cell = CELLS[rnn_cell]
@@ -187,10 +401,8 @@ class SeqDecoder(th.nn.Module):
                                             delimiters=delimiters)
         self.sampler = Sampler(self.decode, max_len=max_len, delimiters=delimiters)
 
-    def forward(self, src_indices, src_lengths, tgt_indices, tgt_lengths):
+    def forward(self, enc_state, tgt_indices, tgt_lengths):
         a = self.activations
-
-        enc_state = self.encode(src_indices, src_lengths)
 
         # predict = (a.out.max(2)[1], tgt_lengths)
         beam, beam_lengths = self.beam_predictor(enc_state)
@@ -230,128 +442,6 @@ class SeqDecoder(th.nn.Module):
         return log_softmax, dec_state
 
 
-class Seq2Seq(SeqDecoder):
-    def __init__(self,
-                 src_vocab, tgt_vocab,
-                 cell_size,
-                 embed_size,
-                 dropout,
-                 delimiters,
-                 rnn_cell='LSTM',
-                 num_layers=1,
-                 beam_size=1,
-                 bidirectional=False,
-                 max_len=None,
-                 monitor_activations=True):
-        super(Seq2Seq, self).__init__(tgt_vocab=tgt_vocab,
-                                      cell_size=cell_size, embed_size=embed_size,
-                                      dropout=dropout, num_layers=num_layers,
-                                      rnn_cell=rnn_cell,
-                                      delimiters=delimiters,
-                                      beam_size=beam_size, max_len=max_len,
-                                      monitor_activations=monitor_activations)
-        self.enc_embedding = th.nn.Embedding(src_vocab, embed_size)
-        cell = CELLS[rnn_cell]
-        self.use_c = (rnn_cell == 'LSTM')
-        if cell_size % 2 != 0:
-            raise ValueError('cell_size must be even for bidirectional encoder '
-                             '(instead got {})'.format(cell_size))
-        self.num_directions = 2 if bidirectional else 1
-        self.encoder = cell(input_size=embed_size,
-                            hidden_size=cell_size // self.num_directions,
-                            num_layers=num_layers,
-                            dropout=dropout,
-                            batch_first=True,
-                            bidirectional=bidirectional)
-        self.h_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
-        self.c_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
-
-    def encode(self, src_indices, src_lengths):
-        a = self.activations
-
-        # TODO: PackedSequence?
-        max_len = src_lengths.data.max()
-        in_embed = self.enc_embedding(src_indices[:, :max_len])
-        init_var = th.autograd.Variable(cu(th.FloatTensor([1.0])))
-        batch_size = src_indices.size()[0]
-        h_init = (self.h_init(init_var)
-                      .view(self.num_layers * self.num_directions, 1,
-                            self.cell_size // self.num_directions)
-                      .repeat(1, batch_size, 1))
-        if self.use_c:
-            c_init = (self.c_init(init_var)
-                          .view(self.num_layers * self.num_directions, 1,
-                                self.cell_size // self.num_directions)
-                          .repeat(1, batch_size, 1))
-            init = (h_init, c_init)
-        else:
-            init = h_init
-        a.enc_out, enc_state = self.encoder(in_embed, init)
-        if self.use_c:
-            (a.enc_h_out, a.enc_c_out) = enc_state
-            return (self.concat_directions(a.enc_h_out), self.concat_directions(a.enc_c_out))
-        else:
-            a.enc_h_out = enc_state
-            return (self.concat_directions(a.enc_h_out),)
-
-    def concat_directions(self, out):
-        if self.num_directions == 1:
-            return out
-        else:
-            out = (out.view(out.size()[0] // self.num_directions,
-                            self.num_directions, out.size()[1], out.size()[2])
-                      .transpose(1, 2).contiguous())
-            assert out.size()[2] == self.num_directions, out.size()
-            return out.view(out.size()[0], out.size()[1], out.size()[2] * out.size()[3])
-
-
-class Conv2Seq(SeqDecoder):
-    def __init__(self,
-                 src_vocab, tgt_vocab,
-                 cell_size,
-                 embed_size,
-                 dropout,
-                 delimiters,
-                 rnn_cell='LSTM',
-                 num_layers=1,
-                 beam_size=1,
-                 bidirectional='ignored',
-                 max_len=None,
-                 monitor_activations=True):
-        super(Conv2Seq, self).__init__(tgt_vocab=tgt_vocab,
-                                       cell_size=cell_size, embed_size=embed_size,
-                                       dropout=dropout, num_layers=num_layers,
-                                       rnn_cell=rnn_cell,
-                                       delimiters=delimiters,
-                                       beam_size=beam_size, max_len=max_len,
-                                       monitor_activations=monitor_activations)
-        self.enc_embedding = th.nn.Embedding(src_vocab, cell_size)
-        self.conv = th.nn.Conv1d(in_channels=cell_size, out_channels=cell_size, kernel_size=2)
-        self.c_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
-        self.nonlinearity = th.nn.Tanh()
-
-    def encode(self, src_indices, src_lengths):
-        a = self.activations
-
-        # TODO: PackedSequence?
-        batch_size = src_indices.size()[0]
-        max_len = src_lengths.data.max()
-        a.in_embed = self.enc_embedding(src_indices[:, :max_len])
-        conv_stack = [a.in_embed.transpose(1, 2)]
-        for i in range(max_len - 1):
-            conv_stack.append(self.conv(self.nonlinearity(conv_stack[-1])))
-        a.conv_repr = (th.stack([conv_stack[n - 1][j, :, 0]
-                                 for j, n in enumerate(src_lengths.data)], 0)
-                         .view(1, batch_size, self.cell_size)
-                         .repeat(self.num_layers, 1, 1))
-        init_var = th.autograd.Variable(cu(th.FloatTensor([1.0])))
-        c_init = (self.c_init(init_var)
-                      .view(self.num_layers, 1, self.cell_size)
-                      .repeat(1, batch_size, 1))
-
-        return a.conv_repr, c_init
-
-
 class BeamPredictor(th.nn.Module):
     def __init__(self, decode_fn, delimiters, beam_size=1, max_len=None):
         super(BeamPredictor, self).__init__()
@@ -374,10 +464,13 @@ class BeamPredictor(th.nn.Module):
             state.append(enc_c[:, :, None, :].expand(num_layers, batch_size,
                                                      self.beam_size, c_size))
 
-        ravel = lambda x: x.contiguous().view(*tuple(x.size()[:-2]) +
-                                              (batch_size, self.beam_size, x.size()[-1]))
-        unravel = lambda x: x.contiguous().view(*tuple(x.size()[:-3]) +
-                                                (batch_size * self.beam_size, x.size()[-1]))
+        def ravel(x):
+            return x.contiguous().view(*tuple(x.size()[:-2]) +
+                                       (batch_size, self.beam_size, x.size()[-1]))
+
+        def unravel(x):
+            return x.contiguous().view(*tuple(x.size()[:-3]) +
+                                       (batch_size * self.beam_size, x.size()[-1]))
 
         beam = th.autograd.Variable(cu(th.LongTensor(batch_size, self.beam_size, 1)
                                          .fill_(self.delimiters[0])))
@@ -441,6 +534,59 @@ class BeamPredictor(th.nn.Module):
         return new_beam, new_beam_scores, new_beam_lengths
 
 
+class Sampler(BeamPredictor):
+    def __init__(self, decode_fn, delimiters, num_samples=1, max_len=None):
+        super(Sampler, self).__init__(decode_fn, delimiters=delimiters, max_len=max_len,
+                                      beam_size=num_samples)
+
+    def step(self, word_scores, length, beam, beam_scores, beam_lengths):
+        assert len(word_scores.size()) == 3, word_scores.size()
+        batch_size, beam_size, vocab_size = word_scores.size()
+        assert beam_size == self.beam_size, word_scores.size()
+        assert len(beam.size()) == 3, beam.size()
+        assert beam.size()[:2] == (batch_size, beam_size), \
+            '%s != (%s, %s, *)' % (beam.size(), batch_size, beam_size)
+        assert beam_scores.size() == (batch_size, 1), \
+            '%s != %s' % (beam_scores.size(), (batch_size, beam_size))
+        assert beam_lengths.size() == (batch_size, 1), \
+            '%s != %s' % (beam_lengths.size(), (batch_size, beam_size))
+
+        # Sample new words
+        def ravel(x):
+            return x.contiguous().view(*tuple(x.size()[:-2]) +
+                                       (batch_size, self.beam_size, x.size()[-1]))
+
+        def unravel(x):
+            return x.contiguous().view(*tuple(x.size()[:-3]) +
+                                       (batch_size * self.beam_size, x.size()[-1]))
+
+        new_indices = ravel(
+            th.multinomial(unravel(th.exp(word_scores)), 1, replacement=True)
+        )[:, :, 0]
+        # Compute updated scores
+        new_word_scores = index_sequence(word_scores, new_indices.data)
+        done_mask = (beam_lengths == length - 1).type_as(new_word_scores)[:, :]
+        new_beam_scores = beam_scores + new_word_scores * done_mask
+
+        # Get previous done status and update it with
+        # which rows have newly reached </s>
+        new_beam_lengths = beam_lengths.clone()
+        # Pad already-finished sequences with </s>
+        new_indices[(new_beam_lengths != length - 1)] = self.delimiters[1]
+        # Add one to the beam lengths that are not done
+        new_beam_lengths += ((new_indices != self.delimiters[1]) *
+                             (new_beam_lengths == length - 1)).type_as(beam_lengths)
+        # Append new token indices
+        new_beam = th.cat([beam, new_indices[:, :, None]], dim=2)
+
+        return new_beam, new_beam_scores, new_beam_lengths
+
+
+class MeanScoreLoss(th.nn.Module):
+    def forward(self, predict, score):
+        return -score.mean()
+
+
 def unravel_index(indices, size):
     '''
     Convert a tensor of indices into an "unraveled" tensor (a 1-dimensional tensor of length
@@ -469,47 +615,3 @@ def unravel_index(indices, size):
         indices, q = (indices / s, th.remainder(indices, s))
         result.append(q)
     return tuple(result[::-1])
-
-
-class Sampler(BeamPredictor):
-    def __init__(self, decode_fn, delimiters, num_samples=1, max_len=None):
-        super(Sampler, self).__init__(decode_fn, delimiters=delimiters, max_len=max_len,
-                                      beam_size=num_samples)
-
-    def step(self, word_scores, length, beam, beam_scores, beam_lengths):
-        assert len(word_scores.size()) == 3, word_scores.size()
-        batch_size, beam_size, vocab_size = word_scores.size()
-        assert beam_size == self.beam_size, word_scores.size()
-        assert len(beam.size()) == 3, beam.size()
-        assert beam.size()[:2] == (batch_size, beam_size), \
-            '%s != (%s, %s, *)' % (beam.size(), batch_size, beam_size)
-        assert beam_scores.size() == (batch_size, 1), \
-            '%s != %s' % (beam_scores.size(), (batch_size, beam_size))
-        assert beam_lengths.size() == (batch_size, 1), \
-            '%s != %s' % (beam_lengths.size(), (batch_size, beam_size))
-
-        # Sample new words
-        ravel = lambda x: x.contiguous().view(*tuple(x.size()[:-2]) +
-                                              (batch_size, self.beam_size, x.size()[-1]))
-        unravel = lambda x: x.contiguous().view(*tuple(x.size()[:-3]) +
-                                                (batch_size * self.beam_size, x.size()[-1]))
-        new_indices = ravel(
-            th.multinomial(unravel(th.exp(word_scores)), 1, replacement=True)
-        )[:, :, 0]
-        # Compute updated scores
-        new_word_scores = index_sequence(word_scores, new_indices.data)
-        done_mask = (beam_lengths == length - 1).type_as(new_word_scores)[:, :]
-        new_beam_scores = beam_scores + new_word_scores * done_mask
-
-        # Get previous done status and update it with
-        # which rows have newly reached </s>
-        new_beam_lengths = beam_lengths.clone()
-        # Pad already-finished sequences with </s>
-        new_indices[(new_beam_lengths != length - 1)] = self.delimiters[1]
-        # Add one to the beam lengths that are not done
-        new_beam_lengths += ((new_indices != self.delimiters[1]) *
-                             (new_beam_lengths == length - 1)).type_as(beam_lengths)
-        # Append new token indices
-        new_beam = th.cat([beam, new_indices[:, :, None]], dim=2)
-
-        return new_beam, new_beam_scores, new_beam_lengths
