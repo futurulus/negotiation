@@ -6,7 +6,7 @@ import torch as th
 from stanza.monitoring import summary
 from stanza.research import config
 
-from thutils import to_numpy, maybe_cuda as cu
+from thutils import to_numpy, to_native, maybe_cuda as cu
 
 parser = config.get_options_parser()
 parser.add_argument('--monitor_activations', type=config.boolean, default=False,
@@ -35,9 +35,9 @@ class TorchModel():
         self.step = 0
         self.last_timestamp = datetime.datetime.now()
 
-    def train(self, pairs):
-        pairs = list(pairs)
-        arrays = self.vectorizer.vectorize_all(pairs)
+    def train(self, tuples):
+        tuples = list(tuples)
+        arrays = self.vectorizer.vectorize_all(tuples)
 
         self.module.zero_grad()
 
@@ -45,7 +45,7 @@ class TorchModel():
 
         loss = self.loss(*before)
         loss.backward()
-        self.monitor(loss, len(pairs))
+        self.monitor(loss, len(tuples))
 
         self.optimizer.step()
 
@@ -94,9 +94,9 @@ class TorchModel():
 
     def unvectorize(self, predict, score):
         return {
-            k: self.vectorizer.unvectorize_all(*(a.data for a in v))
+            k: self.vectorizer.unvectorize_all(*to_numpy(v))
             for k, v in predict.items()
-        }, score.data.tolist()
+        }, to_native(score)
 
     def eval(self, pairs):
         arrays = self.vectorizer.vectorize_all(pairs)

@@ -1,10 +1,10 @@
 import json
 
 
-def parse_deal(split):
+def parse_deal(mode, split):
     input_filename = f'data/deal_{split}.txt'
-    response_filename = f'data/response_{split}.jsons'
-    selection_filename = f'data/selection_{split}.jsons'
+    response_filename = f'data/response{mode}_{split}.jsons'
+    selection_filename = f'data/selection{mode}_{split}.jsons'
 
     with open(input_filename, 'r') as infile, \
             open(response_filename, 'w') as response_file, \
@@ -19,15 +19,15 @@ def parse_deal(split):
                 input = tokens[1:dialogue_i - 1]
                 dialogue = tokens[dialogue_i + 1:output_i - 1]
                 output = tokens[output_i + 1:partner_input_i - 1]
-                dump_responses(input, dialogue, output, response_file)
-                json.dump({
-                    'input': ' '.join(input + dialogue),
-                    'output': ' '.join(output[:3]),
-                }, selection_file)
+                dump_responses(mode, input, dialogue, output, response_file)
+                dump_selection(mode, input, dialogue, output, selection_file)
                 selection_file.write('\n')
 
 
-def dump_responses(input, dialogue, output, response_file):
+def dump_responses(mode, input, dialogue, output, response_file):
+    if mode == '_repro':
+        return
+
     start = 0
     while True:
         try:
@@ -49,6 +49,25 @@ def dump_responses(input, dialogue, output, response_file):
         response_file.write('\n')
 
 
+def dump_selection(mode, input, dialogue, output, selection_file):
+    if mode == '_repro':
+        inst_dict = {
+            'input': ' '.join(input),
+            'output': [
+                ' '.join(dialogue),
+                ' '.join(output[:3]),
+            ]
+        }
+    else:
+        inst_dict = {
+            'input': ' '.join(input + dialogue),
+            'output': ' '.join(output[:3]),
+        }
+
+    json.dump(inst_dict, selection_file)
+
+
 if __name__ == '__main__':
-    for split in 'train', 'val', 'test':
-        parse_deal(split)
+    for mode_ in '', '_repro':
+        for split_ in 'train', 'val', 'test':
+            parse_deal(mode_, split_)

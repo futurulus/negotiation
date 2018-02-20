@@ -183,3 +183,138 @@ class SequenceVectorizer(object):
             return sequence[:self.max_len], self.max_len
         else:
             return list(sequence) + ['<unk>'] * (self.max_len - len(sequence)), len(sequence)
+
+
+GOAL_SIZE = 6
+NUM_ITEMS = 3
+MAX_COUNT = 4
+MIN_FEASIBLE = 16
+MAX_FEASIBLE = 36
+
+
+class NegotiationVectorizer(object):
+    def __init__(self, unk_threshold=0):
+        self.goal_vec = SequenceVectorizer(unk_threshold=0)
+        self.resp_vec = SequenceVectorizer(unk_threshold=unk_threshold)
+        self.sel_vec = SelectionVectorizer()
+
+    def vocab_size(self):
+        return self.goal_vec.vocab_size(), self.resp_vec.vocab_size(), self.sel_vec.vocab_size()
+
+    def add(self, triple):
+        self.add_all([triple])
+
+    def add_all(self, triples):
+        triples = list(triples)
+        self.goal_vec.add_all([t[0] for t in triples])
+        self.resp_vec.add_all([t[1] for t in triples])
+
+    def output_types(self):
+        return (int, int, int, int) + self.sel_vec.output_types()
+
+    def output_shapes(self):
+        return ((GOAL_SIZE,),
+                (self.resp_vec.max_len,),
+                ()) + self.sel_vec.output_shapes()
+
+    def vectorize(self, t):
+        return tuple(v[0] for v in self.vectorize_all([t]))
+
+    def vectorize_all(self, tuples):
+        tuples = list(tuples)
+        goal_vec = self.goal_vec.vectorize_all([t[0] for t in tuples])
+        assert goal_vec[0].shape[1] == GOAL_SIZE
+        resp_vec = self.resp_vec.vectorize_all([t[1] for t in tuples])
+        sel_vec = self.sel_vec.vectorize_all([(t[0], t[2]) for t in tuples])
+        return (goal_vec[0],) + resp_vec + sel_vec
+
+    def unvectorize(self, resp_indices, resp_len, selections):
+        return (self.resp_vec.unvectorize(resp_indices, resp_len),
+                self.sel_vec.unvectorize(selections))
+
+    def unvectorize_all(self, resp_indices, resp_len, selections):
+        return (self.resp_vec.unvectorize_all(resp_indices, resp_len),
+                self.sel_vec.unvectorize_all(selections))
+
+
+class SelectionVectorizer():
+    def __init__(self):
+        self.tokens = ['<no_agreement>', '<disagree>', '<disconnect>'] + [
+            f'item{i}={sel}'
+            for i in range(3)
+            for sel in range(5)
+        ]
+        pad_idx = len(self.tokens)
+        self.tokens.append('<pad>')
+
+        self.cache = {}
+        for count1 in range(MAX_COUNT + 1):
+            for count2 in range(MAX_COUNT + 1):
+                for count3 in range(MAX_COUNT + 1):
+                    if not (MIN_FEASIBLE <=
+                            (count1 + 1) * (count2 + 1) * (count3 + 1) <=
+                            MAX_FEASIBLE):
+                        continue
+
+                    assert self.tokens[0] == '<no_agreement>'
+                    assert self.tokens[1] == '<disagree>'
+                    assert self.tokens[2] == '<disconnect>'
+                    feasible = [[0, 0, 0], [1, 1, 1], [2, 2, 2]]
+
+                    for sel1 in range(count1 + 1):
+                        for sel2 in range(count2 + 1):
+                            for sel3 in range(count3 + 1):
+                                feasible.append([
+                                    self.tokens.index(f'item{i}={sel}')
+                                    for i, sel in enumerate([sel1, sel2, sel3])
+                                ])
+
+                    num_feasible = len(feasible)
+                    while len(feasible) < MAX_FEASIBLE + 3:
+                        feasible.append([pad_idx, pad_idx, pad_idx])
+                    feasible_array = np.array(feasible)
+                    assert len(feasible_array.shape) == 2, feasible_array.shape
+                    assert feasible_array.shape[0] <= MAX_FEASIBLE + 3, feasible_array.shape
+                    assert 'int' in feasible_array.dtype.name, feasible_array.dtype
+
+                    for j, feas in enumerate(feasible[:num_feasible]):
+                        cache_key = (count1, count2, count3) + tuple(self.tokens[t] for t in feas)
+                        self.cache[cache_key] = (j, feasible_array, num_feasible)
+
+    def vocab_size(self):
+        return len(self.tokens)
+
+    def output_types(self):
+        return (int, int, int)
+
+    def output_shapes(self):
+        return ((),
+                (MAX_FEASIBLE + 3, NUM_ITEMS),
+                ())
+
+    def vectorize(self, t):
+        assert len(t) == 2, t
+        input_tokens, sel_tokens = t
+        assert len(input_tokens) == GOAL_SIZE, input_tokens
+        counts = (int(input_tokens[0]), int(input_tokens[2]), int(input_tokens[4]))
+        assert len(sel_tokens) == NUM_ITEMS, sel_tokens
+
+        return self.cache[counts + tuple(sel_tokens)]
+
+    def vectorize_all(self, tuples):
+        tuples = list(tuples)
+        rows = [self.vectorize(t) for t in tuples]
+        result = (np.array([r[0] for r in rows]),
+                  np.array([r[1] for r in rows]),
+                  np.array([r[2] for r in rows]))
+        assert 'int' in result[0].dtype.name
+        assert 'int' in result[1].dtype.name
+        assert 'int' in result[2].dtype.name
+        return result
+
+    def unvectorize(self, idx_seq):
+        return [self.tokens[idx] for idx in idx_seq]
+
+    def unvectorize_all(self, indices):
+        return [self.unvectorize(idx_seq)
+                for idx_seq in indices]

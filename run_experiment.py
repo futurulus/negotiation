@@ -53,7 +53,7 @@ parser.add_argument('--tokenizer', choices=tokenizers.TOKENIZERS, default='unigr
                     help='(De)tokenizer to split strings in dataset.')
 parser.add_argument('--metrics', default=['accuracy', 'perplexity', 'log_likelihood_bits',
                                           'token_perplexity_micro'],
-                    choices=metrics.METRICS.keys(),
+                    choices=metrics.METRICS.keys(), nargs='+',
                     help='The evaluation metrics to report for the experiment.')
 parser.add_argument('--output_train_data', type=config.boolean, default=False,
                     help='If True, write out the training dataset (after cutting down to '

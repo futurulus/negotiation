@@ -40,15 +40,40 @@ def index_sequence(seq, idx):
                idx]
 
 
-def to_numpy(tensor_or_var):
+def to_numpy(obj):
     import numpy as np
-    if isinstance(tensor_or_var, (numbers.Number, np.ndarray)):
-        return tensor_or_var
+    if isinstance(obj, (numbers.Number, np.ndarray)):
+        return obj
+    elif isinstance(obj, (list, tuple)):
+        return type(obj)(to_numpy(e) for e in obj)
+    elif isinstance(obj, dict):
+        return {k: to_numpy(v) for k, v in obj.items()}
 
-    if isinstance(tensor_or_var, th.autograd.Variable):
-        tensor_or_var = tensor_or_var.data
+    if isinstance(obj, th.autograd.Variable):
+        obj = obj.data
 
-    return tensor_or_var.cpu().numpy()
+    return obj.cpu().numpy()
+
+
+def to_native(obj):
+    import numpy as np
+    if isinstance(obj, numbers.Number):
+        return obj
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (list, tuple)):
+        return type(obj)(to_native(e) for e in obj)
+    elif isinstance(obj, dict):
+        return {k: to_native(v) for k, v in obj.items()}
+
+    if isinstance(obj, th.autograd.Variable):
+        obj = obj.data
+
+    return obj.cpu().tolist()
+
+
+def log_softmax(x, dim=-1):
+    return th.nn.LogSoftmax()(x.transpose(0, dim)).transpose(0, dim)
 
 
 _device = 'cpu'

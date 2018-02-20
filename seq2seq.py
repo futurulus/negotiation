@@ -71,7 +71,7 @@ class SimpleSeq2SeqLearner(learner.Learner):
             progress.start_task('Minibatch', len(minibatches))
             for b, batch in enumerate(minibatches):
                 progress.progress(b)
-                self.model.train([self.instance_to_pair(inst) for inst in batch])
+                self.model.train([self.instance_to_tuple(inst) for inst in batch])
             progress.end_task()
 
             self.validate_and_log(validation_instances, metrics,
@@ -85,12 +85,12 @@ class SimpleSeq2SeqLearner(learner.Learner):
         progress.start_task('Vectorizer instance', len(training_instances))
         for i, inst in enumerate(training_instances):
             progress.progress(i)
-            vec.add(self.instance_to_pair(inst))
+            vec.add(self.instance_to_tuple(inst))
         progress.end_task()
 
         return vec
 
-    def instance_to_pair(self, inst):
+    def instance_to_tuple(self, inst):
         def wrap(seq):
             return ['<s>'] + seq + ['</s>']
         tokenize, _ = tokenizers.TOKENIZERS[self.options.tokenizer]
@@ -138,15 +138,21 @@ class SimpleSeq2SeqLearner(learner.Learner):
         for b, batch in enumerate(minibatches):
             if verbosity > 2:
                 progress.progress(b)
-            outputs_batch, scores_batch = self.model.eval([self.instance_to_pair(inst)
+            outputs_batch, scores_batch = self.model.eval([self.instance_to_tuple(inst)
                                                            for inst in batch])
             preds_batch = outputs_batch['sample' if random else 'beam']
-            detokenized = [detokenize(s) for s in preds_batch]
+            detokenized = self.collate_preds(preds_batch, detokenize)
             predictions.extend(detokenized)
-            scores.extend(scores_batch)
+            scores.extend(self.collate_scores(scores_batch))
         if verbosity > 2:
             progress.end_task()
         return predictions, scores
+
+    def collate_preds(self, preds, detokenize):
+        return [detokenize(s) for s in preds]
+
+    def collate_scores(self, scores):
+        return scores
 
 
 class Seq2Seq(th.nn.Module):
@@ -159,8 +165,9 @@ class Seq2Seq(th.nn.Module):
             self.activations = neural.Activations()
 
     def forward(self, src_indices, src_lengths, tgt_indices, tgt_lengths):
-        enc_state = self.encoder(src_indices, src_lengths)
-        return self.decoder(enc_state, tgt_indices, tgt_lengths)
+        enc_out, enc_state = self.encoder(src_indices, src_lengths)
+        predict, score, _ = self.decoder(enc_state, tgt_indices, tgt_lengths)
+        return predict, score
 
 
 class RNN2RNN(Seq2Seq):
@@ -276,27 +283,17 @@ class RNNEncoder(th.nn.Module):
         # TODO: PackedSequence?
         max_len = src_lengths.data.max()
         in_embed = self.enc_embedding(src_indices[:, :max_len])
-        init_var = th.autograd.Variable(cu(th.FloatTensor([1.0])))
         batch_size = src_indices.size()[0]
-        h_init = (self.h_init(init_var)
-                      .view(self.num_layers * self.num_directions, 1,
-                            self.cell_size // self.num_directions)
-                      .repeat(1, batch_size, 1))
-        if self.use_c:
-            c_init = (self.c_init(init_var)
-                          .view(self.num_layers * self.num_directions, 1,
-                                self.cell_size // self.num_directions)
-                          .repeat(1, batch_size, 1))
-            init = (h_init, c_init)
-        else:
-            init = h_init
+        init = generate_rnn_state(self, self.h_init, self.c_init, batch_size)
         a.enc_out, enc_state = self.cell(in_embed, init)
         if self.use_c:
             (a.enc_h_out, a.enc_c_out) = enc_state
-            result = (self.concat_directions(a.enc_h_out), self.concat_directions(a.enc_c_out))
+            result = (a.enc_out,
+                      (self.concat_directions(a.enc_h_out), self.concat_directions(a.enc_c_out)))
         else:
             a.enc_h_out = enc_state
-            result = (self.concat_directions(a.enc_h_out),)
+            result = (a.enc_out,
+                      (self.concat_directions(a.enc_h_out),))
 
         if not self.monitor_activations:
             # Free up memory
@@ -377,6 +374,7 @@ class RNNDecoder(th.nn.Module):
                  rnn_cell='LSTM',
                  num_layers=1,
                  beam_size=1,
+                 extra_input_size=0,
                  max_len=None,
                  activations=None):
         super(RNNDecoder, self).__init__()
@@ -389,7 +387,7 @@ class RNNDecoder(th.nn.Module):
 
         self.dec_embedding = th.nn.Embedding(tgt_vocab, embed_size)
         cell = CELLS[rnn_cell]
-        self.decoder = cell(input_size=embed_size,
+        self.decoder = cell(input_size=embed_size + extra_input_size,
                             hidden_size=cell_size,
                             num_layers=num_layers,
                             dropout=dropout,
@@ -401,14 +399,24 @@ class RNNDecoder(th.nn.Module):
                                             delimiters=delimiters)
         self.sampler = Sampler(self.decode, max_len=max_len, delimiters=delimiters)
 
-    def forward(self, enc_state, tgt_indices, tgt_lengths):
+    def forward(self, enc_state, tgt_indices, tgt_lengths, extra_inputs=None):
         a = self.activations
 
         # predict = (a.out.max(2)[1], tgt_lengths)
-        beam, beam_lengths = self.beam_predictor(enc_state)
-        sample, sample_lengths = self.sampler(enc_state)
+        beam, beam_lengths = self.beam_predictor(enc_state, extra_inputs=extra_inputs)
+        sample, sample_lengths = self.sampler(enc_state, extra_inputs=extra_inputs)
 
-        a.log_softmax, _ = self.decode(tgt_indices[:, :-1], enc_state, monitor=True)
+        if extra_inputs is None:
+            extra_inputs = []
+        else:
+            extra_inputs = [
+                inp[:, None, ...].expand((inp.size()[0], tgt_indices.size()[1] - 1) +
+                                         tuple(inp.size()[1:]))
+                for inp in extra_inputs
+            ]
+        a.log_softmax, dec_out = self.decode(tgt_indices[:, :-1], enc_state,
+                                             extra_inputs=extra_inputs,
+                                             monitor=True)
 
         a.log_prob_token = index_sequence(a.log_softmax, tgt_indices.data[:, 1:])
         a.mask = (lrange(a.log_prob_token.size()[1])[None, :] < tgt_lengths.data[:, None]).float()
@@ -423,9 +431,9 @@ class RNNDecoder(th.nn.Module):
         return {
             'beam': (beam[:, 0, :], beam_lengths[:, 0]),
             'sample': (sample[:, 0, :], sample_lengths[:, 0]),
-        }, score
+        }, score, dec_out
 
-    def decode(self, tgt_indices, enc_state, monitor=False):
+    def decode(self, tgt_indices, enc_state, extra_inputs=None, monitor=False):
         if monitor:
             a = self.activations
         else:
@@ -434,12 +442,18 @@ class RNNDecoder(th.nn.Module):
         prev_embed = self.dec_embedding(tgt_indices)
         if len(enc_state) == 1:
             enc_state = enc_state[0]
-        a.dec_out, dec_state = self.decoder(prev_embed, enc_state)
+
+        if extra_inputs:
+            input_embed = th.cat([prev_embed] + extra_inputs, 2)
+        else:
+            input_embed = prev_embed
+
+        a.dec_out, dec_state = self.decoder(input_embed, enc_state)
         a.out = self.output(a.dec_out)
         log_softmax = th.nn.LogSoftmax()(a.out.transpose(2, 0)).transpose(2, 0)
         if not isinstance(dec_state, tuple):
             dec_state = (dec_state,)
-        return log_softmax, dec_state
+        return log_softmax, (a.dec_out, dec_state)
 
 
 class BeamPredictor(th.nn.Module):
@@ -451,7 +465,7 @@ class BeamPredictor(th.nn.Module):
         self.max_len = max_len
         self.delimiters = delimiters
 
-    def forward(self, enc_state):
+    def forward(self, enc_state, extra_inputs=None):
         assert len(enc_state[0].size()) == 3, enc_state[0].size()
         num_layers, batch_size, h_size = enc_state[0].size()
         state_sizes = []
@@ -463,6 +477,15 @@ class BeamPredictor(th.nn.Module):
             state_sizes.append(c_size)
             state.append(enc_c[:, :, None, :].expand(num_layers, batch_size,
                                                      self.beam_size, c_size))
+        if extra_inputs is None:
+            extra_inputs = []
+        else:
+            extra_inputs = [
+                inp[:, None, ...].expand((inp.size()[0], self.beam_size) + tuple(inp.size()[1:]))
+                                 .contiguous()
+                                 .view((inp.size()[0] * self.beam_size, 1) + tuple(inp.size()[1:]))
+                for inp in extra_inputs
+            ]
 
         def ravel(x):
             return x.contiguous().view(*tuple(x.size()[:-2]) +
@@ -480,8 +503,9 @@ class BeamPredictor(th.nn.Module):
         for length in itertools.count(1):
             last_tokens = beam[:, :, -1:]
             assert last_tokens.size() == (batch_size, self.beam_size, 1), last_tokens.size()
-            word_scores, state = self.decode_fn(unravel(last_tokens),
-                                                tuple(unravel(c) for c in state))
+            word_scores, (_, state) = self.decode_fn(unravel(last_tokens),
+                                                     tuple(unravel(c) for c in state),
+                                                     extra_inputs=extra_inputs)
             word_scores, state = ravel(word_scores[:, 0, :]), tuple(ravel(c) for c in state)
             assert word_scores.size()[:2] == (batch_size, self.beam_size), word_scores.size()
             beam, beam_scores, beam_lengths = self.step(word_scores, length,
@@ -615,3 +639,18 @@ def unravel_index(indices, size):
         indices, q = (indices / s, th.remainder(indices, s))
         result.append(q)
     return tuple(result[::-1])
+
+
+def generate_rnn_state(encoder, h_init_mod, c_init_mod, batch_size):
+    init_var = th.autograd.Variable(cu(th.FloatTensor([1.0])))
+
+    h_init = (h_init_mod(init_var).view(encoder.num_layers * encoder.num_directions, 1,
+                                        encoder.cell_size // encoder.num_directions)
+                                  .repeat(1, batch_size, 1))
+    if encoder.use_c:
+        c_init = (c_init_mod(init_var).view(encoder.num_layers * encoder.num_directions, 1,
+                                            encoder.cell_size // encoder.num_directions)
+                                      .repeat(1, batch_size, 1))
+        return (h_init, c_init)
+    else:
+        return h_init
