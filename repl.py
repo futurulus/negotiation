@@ -172,6 +172,7 @@ def get_input_instance(game, dialogue):
 
 
 ITEMS = ('📕 ', '🎩 ', '⚽ ')
+NAMES = ('book', 'hat', 'ball')
 
 
 def print_game(game):
@@ -179,7 +180,8 @@ def print_game(game):
     print('NEW GAME')
     print('')
     for i in range(3):
-        print(f'    {ITEMS[i] * counts[i]:8s} worth {your_values[i]:d} each')
+        print(f'    {ITEMS[i] * counts[i]:8s} {NAMES[i]:4s} x{counts[i]}'
+              f' worth {your_values[i]:d} each')
     print('')
 
 
@@ -188,7 +190,7 @@ def print_selection(agent, result):
     if result:
         print(f'  {agent} requested:')
         for i in range(3):
-            print(f'    {ITEMS[i] * result[i]:8s}')
+            print(f'    {ITEMS[i] * result[i]:8s} {NAMES[i]:4s} x{result[i]}')
     else:
         print(f'  {agent} indicated no agreement.')
 
