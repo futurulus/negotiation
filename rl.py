@@ -8,24 +8,31 @@ import neural
 import seq2seq
 import vectorizers
 import tokenizers
-from agent import Negotiator, SupervisedLoss, RLLoss
+from agent import RLAgent, Negotiator, SupervisedLoss, RLLoss
 
 
 parser = config.get_options_parser()
 
 parser.add_argument('--load_init_a', default='',
-                    help='Pretrained model file to load for initializing model A in '
+                    help='Pretrained module file to load for initializing module A in '
                          'reinforcement learning.')
 parser.add_argument('--load_init_b', default='',
-                    help='Pretrained model file to load for initializing model B in '
+                    help='Pretrained module file to load for initializing module B in '
                          'reinforcement learning.')
+parser.add_argument('--max_dialogue_len', type=int, default=20,
+                    help='Maximum number of turns in a reinforcement learning dialogue rollout.')
 parser.add_argument('--selection_alpha', type=float, default=0.5,
-                    help='Pretrained model file to load for initializing model B in '
+                    help='Pretrained module file to load for initializing module B in '
                          'reinforcement learning.')
+parser.add_argument('--rl_epsilon', type=float, default=0.1,
+                    help='Fraction of the time to use a random sample from the policy '
+                         'for epsilon-greedy exploration.')
+parser.add_argument('--rl_gamma', type=float, default=0.99,
+                    help='Amount reward is discounted for each dialogue step.')
 
 
 class NegotiationLearner(seq2seq.SimpleSeq2SeqLearner):
-    loss_class = NotImplemented
+    vectorizer_class = vectorizers.NegotiationVectorizer
 
     def __init__(self):
         super(NegotiationLearner, self).__init__()
@@ -44,27 +51,28 @@ class NegotiationLearner(seq2seq.SimpleSeq2SeqLearner):
         }
         if self.options.load_init_a:
             with open(self.options.load_init_a, 'rb') as infile:
-                model_a = pickle.load(infile)
+                module_a = pickle.load(infile)
+                if isinstance(module_a, neural.TorchModel):
+                    module_a = module_a.module
         else:
-            model_a = Negotiator(**negotiator_opts)
+            module_a = Negotiator(**negotiator_opts)
 
         if self.options.load_init_b:
             with open(self.options.load_init_a, 'rb') as infile:
-                self.model_b = pickle.load(infile)
+                self.module_b = pickle.load(infile)
+                if isinstance(self.module_b, neural.TorchModel):
+                    self.module_b = self.module_b.module
         else:
-            self.model_b = Negotiator(**negotiator_opts)
-            self.model_b.load_state_dict(model_a.state_dict())
+            self.module_b = Negotiator(**negotiator_opts)
+            self.module_b.load_state_dict(module_a.state_dict())
 
-        return neural.TorchModel(
-            module=model_a,
-            loss=self.loss_class(self.options),
-            optimizer=th.optim.SGD,
-            optimizer_params={'lr': self.options.learning_rate},
-            vectorizer=vectorizer,
-        )
+        return self.wrap_negotiator(module_a, vectorizer)
+
+    def wrap_negotiator(self, module, vectorizer):
+        raise NotImplementedError
 
     def init_vectorizer(self, training_instances):
-        vec = vectorizers.NegotiationVectorizer()
+        vec = self.vectorizer_class()
         vec.add((['<input>', '</input>'],
                  ['<dialogue>', '</dialogue>', '<eos>', 'YOU:', 'THEM:'],
                  ['<output>', '</output>']))
@@ -81,15 +89,33 @@ class NegotiationLearner(seq2seq.SimpleSeq2SeqLearner):
         tokenize, _ = tokenizers.TOKENIZERS[self.options.tokenizer]
         return (tokenize(inst.input),
                 ['<dialogue>'] + tokenize(inst.output[0]) + ['</dialogue>'],
-                tokenize(inst.output[1]))
+                tokenize(inst.output[1]),
+                tokenize(inst.output[2]))
 
     def train(self, training_instances, validation_instances=None, metrics=None):
         super(NegotiationLearner, self).train(training_instances,
                                               validation_instances=validation_instances,
                                               metrics=metrics)
 
-        with config.open('model_a.pkl', 'wb') as outfile:
-            pickle.dump(self.model, outfile)
+        with config.open('module_a.pkl', 'wb') as outfile:
+            pickle.dump(self.model.module, outfile)
+
+    def collate_preds(self, preds, detokenize):
+        raise NotImplementedError
+
+    def collate_scores(self, scores):
+        raise NotImplementedError
+
+
+class SupervisedLearner(NegotiationLearner):
+    def wrap_negotiator(self, module, vectorizer):
+        return neural.TorchModel(
+            module=module,
+            loss=SupervisedLoss(self.options),
+            optimizer=th.optim.SGD,
+            optimizer_params={'lr': self.options.learning_rate},
+            vectorizer=vectorizer,
+        )
 
     def collate_preds(self, preds, detokenize):
         return [(detokenize(r), detokenize(s)) for r, s in zip(*preds)]
@@ -98,12 +124,35 @@ class NegotiationLearner(seq2seq.SimpleSeq2SeqLearner):
         return list(zip(*scores))
 
 
-class SupervisedLearner(NegotiationLearner):
-    loss_class = SupervisedLoss
-
-
 class RLLearner(NegotiationLearner):
-    loss_class = RLLoss
+    vectorizer_class = vectorizers.SelfPlayVectorizer
 
-    def train(self, training_instances, validation_instances=None, metrics=None):
-        raise NotImplementedError
+    def train_batch(self, batch):
+        for inst in batch:
+            t = self.instance_to_tuple(inst)
+            self.model.train([t])
+
+    def wrap_negotiator(self, module, vectorizer):
+        if self.options.batch_size != 1:
+            raise ValueError('RLAgent and StaticSelfPlayLearner currently only support a batch '
+                             'size of 1. Pass --batch_size 1 for RL/self-play evaluation.')
+
+        return neural.TorchModel(
+            module=RLAgent(module, self.module_b, vectorizer, self.options),
+            loss=RLLoss(self.options),
+            optimizer=th.optim.SGD,
+            optimizer_params={'lr': self.options.learning_rate},
+            vectorizer=vectorizer,
+        )
+
+    def collate_preds(self, preds, detokenize):
+        return [([detokenize(t) for t in d], detokenize(sa), detokenize(sb), ra, rb)
+                for d, sa, sb, ra, rb in zip(*preds)]
+
+    def collate_scores(self, scores):
+        return list(zip(*scores))
+
+
+class StaticSelfPlayLearner(RLLearner):
+    def train_batch(self, batch):
+        pass

@@ -1,6 +1,8 @@
 import numpy as np
 from collections import Counter
 
+import thutils
+
 from stanza.research.rng import get_rng
 
 rng = get_rng()
@@ -223,10 +225,11 @@ class NegotiationVectorizer(object):
     def vectorize_all(self, tuples):
         tuples = list(tuples)
         goal_vec = self.goal_vec.vectorize_all([t[0] for t in tuples])
+        partner_goal_vec = self.goal_vec.vectorize_all([t[3] for t in tuples])
         assert goal_vec[0].shape[1] == GOAL_SIZE
         resp_vec = self.resp_vec.vectorize_all([t[1] for t in tuples])
         sel_vec = self.sel_vec.vectorize_all([(t[0], t[2]) for t in tuples])
-        return (goal_vec[0],) + resp_vec + sel_vec
+        return (goal_vec[0], partner_goal_vec[0]) + resp_vec + sel_vec
 
     def unvectorize(self, resp_indices, resp_len, selections):
         return (self.resp_vec.unvectorize(resp_indices, resp_len),
@@ -318,3 +321,18 @@ class SelectionVectorizer():
     def unvectorize_all(self, indices):
         return [self.unvectorize(idx_seq)
                 for idx_seq in indices]
+
+
+class SelfPlayVectorizer(NegotiationVectorizer):
+    def unvectorize(self, dialogue, sel_a, sel_b, reward, partner_reward):
+        return self.unvectorize_all([dialogue], [sel_a], [sel_b], [reward], [partner_reward])
+
+    def unvectorize_all(self, dialogue, sel_a, sel_b, reward, partner_reward):
+        dialogue_tokens = [self.resp_vec.unvectorize_all(inds, lens) for inds, lens in dialogue]
+        dialogue_transpose = [[dialogue_tokens[t][b] for t in range(len(dialogue_tokens))]
+                              for b in range(len(dialogue_tokens[0]))]
+
+        sel_a_tokens = self.sel_vec.unvectorize_all(sel_a)
+        sel_b_tokens = self.sel_vec.unvectorize_all(sel_b)
+        return (dialogue_transpose, sel_a_tokens, sel_b_tokens,
+                thutils.to_native(reward), thutils.to_native(partner_reward))

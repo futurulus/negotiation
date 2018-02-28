@@ -19,12 +19,13 @@ def parse_deal(mode, split):
                 input = tokens[1:dialogue_i - 1]
                 dialogue = tokens[dialogue_i + 1:output_i - 1]
                 output = tokens[output_i + 1:partner_input_i - 1]
-                dump_responses(mode, input, dialogue, output, response_file)
-                dump_selection(mode, input, dialogue, output, selection_file)
+                partner_input = tokens[partner_input_i + 1:-1]
+                dump_responses(mode, input, dialogue, output, partner_input, response_file)
+                dump_selection(mode, input, dialogue, output, partner_input, selection_file)
                 selection_file.write('\n')
 
 
-def dump_responses(mode, input, dialogue, output, response_file):
+def dump_responses(mode, input, dialogue, output, partner_input, response_file):
     if mode == '_repro':
         return
 
@@ -49,13 +50,14 @@ def dump_responses(mode, input, dialogue, output, response_file):
         response_file.write('\n')
 
 
-def dump_selection(mode, input, dialogue, output, selection_file):
+def dump_selection(mode, input, dialogue, output, partner_input, selection_file):
     if mode == '_repro':
         inst_dict = {
             'input': ' '.join(input),
             'output': [
                 ' '.join(dialogue),
                 ' '.join(output[:3]),
+                ' '.join(partner_input),
             ]
         }
     else:

@@ -1,3 +1,4 @@
+import argparse
 import datetime
 import numpy as np
 import numbers
@@ -18,11 +19,14 @@ parser.add_argument('--monitor_params', type=config.boolean, default=False,
 parser.add_argument('--monitor_grads', type=config.boolean, default=False,
                     help='If True, output scalar or histogram summaries for gradients with '
                          'respect to all parameters of the module.')
+parser.add_argument('--grad_clip', type=float, default=5.0,
+                    help='The maximum norm of the gradients to use in training, to prevent '
+                         'exploding gradient problems.')
 
 
 class TorchModel():
     def __init__(self, module, loss, optimizer, optimizer_params, vectorizer):
-        self.options = config.options()
+        self.get_options()
         self.module = cu(module)
         self.loss = cu(loss)
         self.optimizer = optimizer(self.module.parameters(), **optimizer_params)
@@ -34,6 +38,11 @@ class TorchModel():
             self.summary_writer = None
         self.step = 0
         self.last_timestamp = datetime.datetime.now()
+
+    def get_options(self):
+        if not hasattr(self, 'options'):
+            options = config.options()
+            self.options = argparse.Namespace(**options.__dict__)
 
     def train(self, tuples):
         tuples = list(tuples)
@@ -47,6 +56,7 @@ class TorchModel():
         loss.backward()
         self.monitor(loss, len(tuples))
 
+        th.nn.utils.clip_grad_norm(self.module.parameters(), self.options.grad_clip)
         self.optimizer.step()
 
         return self.unvectorize(*before)

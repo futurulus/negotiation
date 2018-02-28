@@ -71,12 +71,15 @@ class SimpleSeq2SeqLearner(learner.Learner):
             progress.start_task('Minibatch', len(minibatches))
             for b, batch in enumerate(minibatches):
                 progress.progress(b)
-                self.model.train([self.instance_to_tuple(inst) for inst in batch])
+                self.train_batch(batch)
             progress.end_task()
 
             self.validate_and_log(validation_instances, metrics,
                                   self.model.summary_writer, epoch=epoch)
         progress.end_task()
+
+    def train_batch(self, batch):
+        self.model.train([self.instance_to_tuple(inst) for inst in batch])
 
     def init_vectorizer(self, training_instances):
         vec = vectorizers.Seq2SeqVectorizer()
@@ -403,8 +406,10 @@ class RNNDecoder(th.nn.Module):
         a = self.activations
 
         # predict = (a.out.max(2)[1], tgt_lengths)
-        beam, beam_lengths = self.beam_predictor(enc_state, extra_inputs=extra_inputs)
-        sample, sample_lengths = self.sampler(enc_state, extra_inputs=extra_inputs)
+        (beam, beam_lengths,
+         beam_scores, beam_outputs) = self.beam_predictor(enc_state, extra_inputs=extra_inputs)
+        (sample, sample_lengths,
+         sample_scores, sample_outputs) = self.sampler(enc_state, extra_inputs=extra_inputs)
 
         if extra_inputs is None:
             extra_inputs = []
@@ -414,24 +419,34 @@ class RNNDecoder(th.nn.Module):
                                          tuple(inp.size()[1:]))
                 for inp in extra_inputs
             ]
-        a.log_softmax, dec_out = self.decode(tgt_indices[:, :-1], enc_state,
-                                             extra_inputs=extra_inputs,
-                                             monitor=True)
+        a.log_softmax, (dec_out, dec_state) = self.decode(tgt_indices[:, :-1], enc_state,
+                                                          extra_inputs=extra_inputs,
+                                                          monitor=True)
 
         a.log_prob_token = index_sequence(a.log_softmax, tgt_indices.data[:, 1:])
         a.mask = (lrange(a.log_prob_token.size()[1])[None, :] < tgt_lengths.data[:, None]).float()
         a.log_prob_masked = a.log_prob_token * th.autograd.Variable(a.mask)
         a.log_prob_seq = a.log_prob_masked.sum(1)
-        score = a.log_prob_seq
 
         if not self.monitor_activations:
             # Free up memory
             a.__dict__.clear()
 
-        return {
+        predict = {
             'beam': (beam[:, 0, :], beam_lengths[:, 0]),
             'sample': (sample[:, 0, :], sample_lengths[:, 0]),
-        }, score, dec_out
+        }
+        score = {
+            'beam': beam_scores[:, 0],
+            'sample': sample_scores[:, 0],
+            'target': a.log_prob_seq,
+        }
+        output = {
+            'beam': beam_outputs,
+            'sample': sample_outputs,
+            'target': (dec_out, dec_state),
+        }
+        return predict, score, output
 
     def decode(self, tgt_indices, enc_state, extra_inputs=None, monitor=False):
         if monitor:
@@ -499,22 +514,37 @@ class BeamPredictor(th.nn.Module):
                                          .fill_(self.delimiters[0])))
         beam_scores = th.autograd.Variable(cu(th.zeros(batch_size, self.beam_size)))
         beam_lengths = th.autograd.Variable(cu(th.LongTensor(batch_size, self.beam_size).zero_()))
+        outputs = []
+        states = []
 
         for length in itertools.count(1):
             last_tokens = beam[:, :, -1:]
             assert last_tokens.size() == (batch_size, self.beam_size, 1), last_tokens.size()
-            word_scores, (_, state) = self.decode_fn(unravel(last_tokens),
-                                                     tuple(unravel(c) for c in state),
-                                                     extra_inputs=extra_inputs)
-            word_scores, state = ravel(word_scores[:, 0, :]), tuple(ravel(c) for c in state)
+            word_scores, (dec_out, state) = self.decode_fn(unravel(last_tokens),
+                                                           tuple(unravel(c) for c in state),
+                                                           extra_inputs=extra_inputs)
+            # import pdb; pdb.set_trace()
+            word_scores = ravel(word_scores[:, 0, :])
+            state = tuple(ravel(c[0, :, :]) for c in state)
+            states.append(state)
+            outputs.append(dec_out)
             assert word_scores.size()[:2] == (batch_size, self.beam_size), word_scores.size()
-            beam, beam_scores, beam_lengths = self.step(word_scores, length,
+            beam, beam_lengths, beam_scores = self.step(word_scores, length,
                                                         beam, beam_scores, beam_lengths)
             if (beam_lengths.data != length).prod() or \
                     (self.max_len is not None and length == self.max_len):
                 break
 
-        return beam[:, :, 1:], th.clamp(beam_lengths, max=self.max_len)
+        # TODO: check indexing, possibly fix simple seq2seq
+        # NOTE: beam now includes <s> at the beginning
+        all_states_collated = [th.stack(s, dim=2) for s in zip(*states)]
+        final_indices = th.clamp(beam_lengths.data, max=self.max_len - 1)
+        final_states = [index_sequence(s, final_indices) for s in all_states_collated]
+        all_outputs = th.stack(outputs, dim=1)
+        return (beam,
+                th.clamp(beam_lengths, max=self.max_len),
+                beam_scores,
+                (all_outputs, final_states))
 
     def step(self, word_scores, length, beam, beam_scores, beam_lengths):
         assert len(word_scores.size()) == 3, word_scores.size()
@@ -555,7 +585,7 @@ class BeamPredictor(th.nn.Module):
         # Append new token indices
         new_beam = th.cat([beam, new_indices[:, :, None]], dim=2)
 
-        return new_beam, new_beam_scores, new_beam_lengths
+        return new_beam, new_beam_lengths, new_beam_scores
 
 
 class Sampler(BeamPredictor):
@@ -603,7 +633,7 @@ class Sampler(BeamPredictor):
         # Append new token indices
         new_beam = th.cat([beam, new_indices[:, :, None]], dim=2)
 
-        return new_beam, new_beam_scores, new_beam_lengths
+        return new_beam, new_beam_lengths, new_beam_scores
 
 
 class MeanScoreLoss(th.nn.Module):
