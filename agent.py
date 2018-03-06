@@ -105,6 +105,8 @@ class Negotiator(th.nn.Module):
 
         a.dec_state = seq2seq.generate_rnn_state(self.response_encoder,
                                                  self.h_init, self.c_init, batch_size)
+        if not isinstance(a.dec_state, tuple):
+            a.dec_state = (a.dec_state,)
 
     def dialogue(self, resp_indices, resp_len, persist=True, predict=True, eos_token=None):
         # "GRU_w": encode and produce dialogue
@@ -113,8 +115,9 @@ class Negotiator(th.nn.Module):
         assert resp_indices.dim() == 2, resp_indices.size()
         batch_size, max_resp_len = resp_indices.size()
 
+        dec_state_concat = tuple(self.response_encoder.concat_directions(c) for c in a.dec_state)
         response_predict, response_score, response_output = self.response_decoder(
-            a.dec_state,
+            dec_state_concat,
             resp_indices, resp_len,
             extra_inputs=[a.context_repr],
             extra_delimiter=eos_token,
@@ -222,8 +225,8 @@ class SupervisedLoss(th.nn.Module):
         self.alpha = options.selection_alpha
 
     def forward(self, predict, score):
-        score_response, score_selection = score
-        return -score_response['target'].mean() - self.alpha * score_selection['target'].mean()
+        response_score, selection_score = score
+        return -response_score['target'].mean() - self.alpha * selection_score['target'].mean()
 
 
 class RLLoss(th.nn.Module):

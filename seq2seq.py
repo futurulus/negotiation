@@ -155,7 +155,7 @@ class SimpleSeq2SeqLearner(learner.Learner):
         return [detokenize(s) for s in preds]
 
     def collate_scores(self, scores):
-        return scores
+        return scores['target']
 
 
 class Seq2Seq(th.nn.Module):
@@ -439,10 +439,6 @@ class RNNDecoder(th.nn.Module):
         a.log_prob_masked = a.log_prob_token * th.autograd.Variable(a.mask)
         a.log_prob_seq = a.log_prob_masked.sum(1)
 
-        if not self.monitor_activations:
-            # Free up memory
-            a.__dict__.clear()
-
         predict = {}
         score = {
             'target': a.log_prob_seq
@@ -451,13 +447,18 @@ class RNNDecoder(th.nn.Module):
             'target': (dec_out, dec_state)
         }
         if output_beam:
-            predict['beam'] = (beam[:, 0, :], beam_lengths[:, 0])
+            predict['beam'] = (beam[:, 0, 1:], beam_lengths[:, 0])
             score['beam'] = beam_scores[:, 0]
             output['beam'] = beam_outputs
         if output_sample:
-            predict['sample'] = (sample[:, 0, :], sample_lengths[:, 0])
+            predict['sample'] = (sample[:, 0, 1:], sample_lengths[:, 0])
             score['sample'] = sample_scores[:, 0]
             output['sample'] = sample_outputs
+
+        if not self.monitor_activations:
+            # Free up memory
+            a.__dict__.clear()
+
         return predict, score, output
 
     def decode(self, tgt_indices, enc_state, extra_inputs=None, monitor=False):
@@ -493,6 +494,8 @@ class BeamPredictor(th.nn.Module):
         self.delimiters = delimiters
 
     def forward(self, enc_state, extra_inputs=None, extra_delimiter=None):
+        if not isinstance(enc_state, tuple):
+            enc_state = (enc_state,)
         assert len(enc_state[0].size()) == 3, enc_state[0].size()
         num_layers, batch_size, h_size = enc_state[0].size()
         state_sizes = []
@@ -537,7 +540,7 @@ class BeamPredictor(th.nn.Module):
                                                            extra_inputs=extra_inputs)
             # import pdb; pdb.set_trace()
             word_scores = ravel(word_scores[:, 0, :])
-            state = tuple(ravel(c[0, :, :]) for c in state)
+            state = tuple(ravel(c) for c in state)
             states.append(state)
             outputs.append(dec_out)
             assert word_scores.size()[:2] == (batch_size, self.beam_size), word_scores.size()
@@ -548,9 +551,11 @@ class BeamPredictor(th.nn.Module):
                     (self.max_len is not None and length == self.max_len):
                 break
 
-        all_states_collated = [th.stack(s, dim=2) for s in zip(*states)]
+        all_states_collated = [th.stack(s, dim=3) for s in zip(*states)]
         final_indices = th.clamp(beam_lengths.data, max=self.max_len - 1)
-        final_states = [index_sequence(s, final_indices) for s in all_states_collated]
+        final_states = [s[:, lrange(batch_size)[:, None],
+                          lrange(self.beam_size)[None, :], final_indices, :]
+                        for s in all_states_collated]
         all_outputs = th.stack(outputs, dim=1)
         return (beam,
                 th.clamp(beam_lengths, max=self.max_len),
@@ -655,7 +660,7 @@ class Sampler(BeamPredictor):
 
 class MeanScoreLoss(th.nn.Module):
     def forward(self, predict, score):
-        return -score.mean()
+        return -score['target'].mean()
 
 
 def unravel_index(indices, size):

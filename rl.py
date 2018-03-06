@@ -22,8 +22,8 @@ parser.add_argument('--load_init_b', default='',
 parser.add_argument('--max_dialogue_len', type=int, default=20,
                     help='Maximum number of turns in a reinforcement learning dialogue rollout.')
 parser.add_argument('--selection_alpha', type=float, default=0.5,
-                    help='Pretrained module file to load for initializing module B in '
-                         'reinforcement learning.')
+                    help='Relative weight of the selection compared to the responses (which '
+                         'always get weight 1) in the supervised loss function.')
 parser.add_argument('--rl_epsilon', type=float, default=0.1,
                     help='Fraction of the time to use a random sample from the policy '
                          'for epsilon-greedy exploration.')
@@ -97,6 +97,8 @@ class NegotiationLearner(seq2seq.SimpleSeq2SeqLearner):
                                               validation_instances=validation_instances,
                                               metrics=metrics)
 
+        # Don't write activations to pickle file
+        self.model.module.apply(clear_activations)
         with config.open('module_a.pkl', 'wb') as outfile:
             pickle.dump(self.model.module, outfile)
 
@@ -105,6 +107,11 @@ class NegotiationLearner(seq2seq.SimpleSeq2SeqLearner):
 
     def collate_scores(self, scores):
         raise NotImplementedError
+
+
+def clear_activations(module):
+    if hasattr(module, 'activations'):
+        module.activations.__dict__.clear()
 
 
 class SupervisedLearner(NegotiationLearner):
