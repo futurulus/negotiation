@@ -48,6 +48,7 @@ class TorchModel():
         tuples = list(tuples)
         arrays = self.vectorizer.vectorize_all(tuples)
 
+        self.module.train()
         self.module.zero_grad()
 
         before = self.transform_and_predict(arrays)
@@ -110,6 +111,7 @@ class TorchModel():
 
     def eval(self, pairs):
         arrays = self.vectorizer.vectorize_all(pairs)
+        self.module.eval()
         predict, score = self.transform_and_predict(arrays)
         return self.unvectorize(predict, score)
 

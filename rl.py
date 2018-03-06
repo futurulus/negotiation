@@ -121,7 +121,7 @@ class SupervisedLearner(NegotiationLearner):
         return [(detokenize(r), detokenize(s)) for r, s in zip(*preds)]
 
     def collate_scores(self, scores):
-        return list(zip(*scores))
+        return list(zip(*(s['target'] for s in scores)))
 
 
 class RLLearner(NegotiationLearner):

@@ -167,9 +167,11 @@ class Seq2Seq(th.nn.Module):
         if not hasattr(self, 'activations'):
             self.activations = neural.Activations()
 
-    def forward(self, src_indices, src_lengths, tgt_indices, tgt_lengths):
+    def forward(self, src_indices, src_lengths, tgt_indices, tgt_lengths,
+                extra_delimiter=None, output_beam=None, output_sample=None):
         enc_out, enc_state = self.encoder(src_indices, src_lengths)
-        predict, score, _ = self.decoder(enc_state, tgt_indices, tgt_lengths)
+        predict, score, _ = self.decoder(enc_state, tgt_indices, tgt_lengths,
+                                         output_beam=output_beam, output_sample=output_sample)
         return predict, score
 
 
@@ -402,14 +404,23 @@ class RNNDecoder(th.nn.Module):
                                             delimiters=delimiters)
         self.sampler = Sampler(self.decode, max_len=max_len, delimiters=delimiters)
 
-    def forward(self, enc_state, tgt_indices, tgt_lengths, extra_inputs=None):
+    def forward(self, enc_state, tgt_indices, tgt_lengths, extra_inputs=None,
+                extra_delimiter=None, output_beam=None, output_sample=None):
+        if output_beam is None:
+            output_beam = not self.training
+        if output_sample is None:
+            output_sample = not self.training
+
         a = self.activations
 
-        # predict = (a.out.max(2)[1], tgt_lengths)
-        (beam, beam_lengths,
-         beam_scores, beam_outputs) = self.beam_predictor(enc_state, extra_inputs=extra_inputs)
-        (sample, sample_lengths,
-         sample_scores, sample_outputs) = self.sampler(enc_state, extra_inputs=extra_inputs)
+        if output_beam:
+            (beam, beam_lengths,
+             beam_scores, beam_outputs) = self.beam_predictor(enc_state, extra_inputs=extra_inputs,
+                                                              extra_delimiter=extra_delimiter)
+        if output_sample:
+            (sample, sample_lengths,
+             sample_scores, sample_outputs) = self.sampler(enc_state, extra_inputs=extra_inputs,
+                                                           extra_delimiter=extra_delimiter)
 
         if extra_inputs is None:
             extra_inputs = []
@@ -432,20 +443,21 @@ class RNNDecoder(th.nn.Module):
             # Free up memory
             a.__dict__.clear()
 
-        predict = {
-            'beam': (beam[:, 0, :], beam_lengths[:, 0]),
-            'sample': (sample[:, 0, :], sample_lengths[:, 0]),
-        }
+        predict = {}
         score = {
-            'beam': beam_scores[:, 0],
-            'sample': sample_scores[:, 0],
-            'target': a.log_prob_seq,
+            'target': a.log_prob_seq
         }
         output = {
-            'beam': beam_outputs,
-            'sample': sample_outputs,
-            'target': (dec_out, dec_state),
+            'target': (dec_out, dec_state)
         }
+        if output_beam:
+            predict['beam'] = (beam[:, 0, :], beam_lengths[:, 0])
+            score['beam'] = beam_scores[:, 0]
+            output['beam'] = beam_outputs
+        if output_sample:
+            predict['sample'] = (sample[:, 0, :], sample_lengths[:, 0])
+            score['sample'] = sample_scores[:, 0]
+            output['sample'] = sample_outputs
         return predict, score, output
 
     def decode(self, tgt_indices, enc_state, extra_inputs=None, monitor=False):
@@ -480,7 +492,7 @@ class BeamPredictor(th.nn.Module):
         self.max_len = max_len
         self.delimiters = delimiters
 
-    def forward(self, enc_state, extra_inputs=None):
+    def forward(self, enc_state, extra_inputs=None, extra_delimiter=None):
         assert len(enc_state[0].size()) == 3, enc_state[0].size()
         num_layers, batch_size, h_size = enc_state[0].size()
         state_sizes = []
@@ -530,13 +542,12 @@ class BeamPredictor(th.nn.Module):
             outputs.append(dec_out)
             assert word_scores.size()[:2] == (batch_size, self.beam_size), word_scores.size()
             beam, beam_lengths, beam_scores = self.step(word_scores, length,
-                                                        beam, beam_scores, beam_lengths)
+                                                        beam, beam_scores, beam_lengths,
+                                                        extra_delimiter=extra_delimiter)
             if (beam_lengths.data != length).prod() or \
                     (self.max_len is not None and length == self.max_len):
                 break
 
-        # TODO: check indexing, possibly fix simple seq2seq
-        # NOTE: beam now includes <s> at the beginning
         all_states_collated = [th.stack(s, dim=2) for s in zip(*states)]
         final_indices = th.clamp(beam_lengths.data, max=self.max_len - 1)
         final_states = [index_sequence(s, final_indices) for s in all_states_collated]
@@ -546,7 +557,7 @@ class BeamPredictor(th.nn.Module):
                 beam_scores,
                 (all_outputs, final_states))
 
-    def step(self, word_scores, length, beam, beam_scores, beam_lengths):
+    def step(self, word_scores, length, beam, beam_scores, beam_lengths, extra_delimiter):
         assert len(word_scores.size()) == 3, word_scores.size()
         batch_size, beam_size, vocab_size = word_scores.size()
         assert beam_size == self.beam_size, word_scores.size()
@@ -578,10 +589,13 @@ class BeamPredictor(th.nn.Module):
         # which rows have newly reached </s>
         new_beam_lengths = beam_lengths[lrange(batch_size)[:, None], rows.data].clone()
         # Pad already-finished sequences with </s>
-        new_indices[(new_beam_lengths != length - 1)] = self.delimiters[1]
+        pad_delimiter = extra_delimiter if extra_delimiter is not None else self.delimiters[1]
+        new_indices[(new_beam_lengths != length - 1)] = pad_delimiter
         # Add one to the beam lengths that are not done
-        new_beam_lengths += ((new_indices != self.delimiters[1]) *
-                             (new_beam_lengths == length - 1)).type_as(beam_lengths)
+        continue_mask = (new_indices != self.delimiters[1]) * (new_beam_lengths == length - 1)
+        if extra_delimiter is not None:
+            continue_mask = continue_mask * (new_indices != extra_delimiter)
+        new_beam_lengths += continue_mask.type_as(beam_lengths)
         # Append new token indices
         new_beam = th.cat([beam, new_indices[:, :, None]], dim=2)
 
@@ -593,7 +607,7 @@ class Sampler(BeamPredictor):
         super(Sampler, self).__init__(decode_fn, delimiters=delimiters, max_len=max_len,
                                       beam_size=num_samples)
 
-    def step(self, word_scores, length, beam, beam_scores, beam_lengths):
+    def step(self, word_scores, length, beam, beam_scores, beam_lengths, extra_delimiter):
         assert len(word_scores.size()) == 3, word_scores.size()
         batch_size, beam_size, vocab_size = word_scores.size()
         assert beam_size == self.beam_size, word_scores.size()
@@ -626,10 +640,13 @@ class Sampler(BeamPredictor):
         # which rows have newly reached </s>
         new_beam_lengths = beam_lengths.clone()
         # Pad already-finished sequences with </s>
-        new_indices[(new_beam_lengths != length - 1)] = self.delimiters[1]
+        pad_delimiter = extra_delimiter if extra_delimiter is not None else self.delimiters[1]
+        new_indices[(new_beam_lengths != length - 1)] = pad_delimiter
         # Add one to the beam lengths that are not done
-        new_beam_lengths += ((new_indices != self.delimiters[1]) *
-                             (new_beam_lengths == length - 1)).type_as(beam_lengths)
+        continue_mask = (new_indices != self.delimiters[1]) * (new_beam_lengths == length - 1)
+        if extra_delimiter is not None:
+            continue_mask = continue_mask * (new_indices != extra_delimiter)
+        new_beam_lengths += continue_mask.type_as(beam_lengths)
         # Append new token indices
         new_beam = th.cat([beam, new_indices[:, :, None]], dim=2)
 

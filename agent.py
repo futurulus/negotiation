@@ -106,7 +106,7 @@ class Negotiator(th.nn.Module):
         a.dec_state = seq2seq.generate_rnn_state(self.response_encoder,
                                                  self.h_init, self.c_init, batch_size)
 
-    def dialogue(self, resp_indices, resp_len, persist=True):
+    def dialogue(self, resp_indices, resp_len, persist=True, predict=True, eos_token=None):
         # "GRU_w": encode and produce dialogue
         a = self.activations
 
@@ -116,7 +116,9 @@ class Negotiator(th.nn.Module):
         response_predict, response_score, response_output = self.response_decoder(
             a.dec_state,
             resp_indices, resp_len,
-            extra_inputs=[a.context_repr]
+            extra_inputs=[a.context_repr],
+            extra_delimiter=eos_token,
+            output_beam=predict, output_sample=predict
         )
         (dialogue_repr_seq, dec_state) = response_output['target']
         if persist:
@@ -168,10 +170,14 @@ class Negotiator(th.nn.Module):
         assert a.full_selection_scores.size() == (batch_size, MAX_FEASIBLE + 3), \
             (a.full_selection_scores.size(), batch_size)
 
-        selection_beam = a.full_selection_scores.max(dim=1)[1]
+        a.selection_beam_score, selection_beam = a.full_selection_scores.max(dim=1)
         assert selection_beam.size() == (batch_size,), (selection_beam.size(), batch_size)
         selection_sample = th.multinomial(th.exp(a.full_selection_scores),
                                           1, replacement=True)[:, 0]
+        a.selection_sample_score = th.exp(a.full_selection_scores)[
+            lrange(a.full_selection_scores.size()[0]),
+            selection_sample.data
+        ]
         assert selection_sample.size() == (batch_size,), (selection_sample.size(), batch_size)
         selection_predict = {
             'beam': self.sel_indices_to_selection(feasible_sels, selection_beam),
@@ -181,24 +187,33 @@ class Negotiator(th.nn.Module):
             (selection_predict['beam'].size(), batch_size)
         assert selection_predict['sample'].size() == (batch_size, NUM_ITEMS), \
             (selection_predict['sample'].size(), batch_size)
-        a.selection_score = a.full_selection_scores[
+        a.selection_target_score = a.full_selection_scores[
             lrange(a.full_selection_scores.size()[0]),
             sel_indices.data
         ]
-        assert a.selection_score.size() == (batch_size,), (a.selection_score.size(), batch_size)
+        assert a.selection_target_score.size() == (batch_size,), (a.selection_score.size(),
+                                                                  batch_size)
+        selection_score = {
+            'target': a.selection_target_score,
+            'beam': a.selection_beam_score,
+            'sample': a.selection_sample_score,
+        }
 
-        return selection_predict, a.selection_score
+        return selection_predict, selection_score
 
     def sel_indices_to_selection(self, feasible_sels, sel_indices):
         return feasible_sels[lrange(feasible_sels.size()[0]), sel_indices.data, :]
 
-    def speak(self):
+    def speak(self, eos_token=None):
         empty_resp_indices = th.autograd.Variable(cu(th.LongTensor([[0, 1]])))
         empty_resp_len = th.autograd.Variable(cu(th.LongTensor([2])))
         response_predict, response_score = self.dialogue(empty_resp_indices, empty_resp_len,
-                                                         persist=False)
+                                                         persist=False, eos_token=eos_token)
         del response_score['target']
         return response_predict, response_score
+
+    def listen(self, resp_indices, resp_len):
+        self.dialogue(resp_indices, resp_len, predict=False)
 
 
 class SupervisedLoss(th.nn.Module):
@@ -208,7 +223,7 @@ class SupervisedLoss(th.nn.Module):
 
     def forward(self, predict, score):
         score_response, score_selection = score
-        return -score_response.mean() - self.alpha * score_selection.mean()
+        return -score_response['target'].mean() - self.alpha * score_selection['target'].mean()
 
 
 class RLLoss(th.nn.Module):
@@ -247,6 +262,7 @@ class RLAgent(th.nn.Module):
         self.negotiator = negotiator
         self.partner = partner
         self.vectorizer = vectorizer
+        self.eos = th.LongTensor(self.vectorizer.resp_vec.vectorize(['<eos>'])[0])[0]
 
         self.epsilon = options.rl_epsilon
         self.max_dialogue_len = options.max_dialogue_len
@@ -269,12 +285,12 @@ class RLAgent(th.nn.Module):
             agent = self.negotiator if my_turn else self.partner
             other = self.partner if my_turn else self.negotiator
 
-            output_predict, output_score = agent.speak()
+            output_predict, output_score = agent.speak(self.eos)
             (agent_resp_indices, resp_len), policy_score = self.policy(output_predict, output_score)
-            agent.dialogue(agent_resp_indices, resp_len)
+            agent.listen(agent_resp_indices, resp_len)
 
             other_resp_indices = self.transform_dialogue(agent_resp_indices)
-            other.dialogue(other_resp_indices, resp_len)
+            other.listen(other_resp_indices, resp_len)
 
             dialogue.append(((agent_resp_indices if my_turn else other_resp_indices), resp_len))
             policy_scores.append(policy_score)
