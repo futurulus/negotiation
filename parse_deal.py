@@ -5,10 +5,12 @@ def parse_deal(mode, split):
     input_filename = f'data/deal_{split}.txt'
     response_filename = f'data/response{mode}_{split}.jsons'
     selection_filename = f'data/selection{mode}_{split}.jsons'
+    partner_filename = f'data/partner{mode}_{split}.jsons'
 
     with open(input_filename, 'r') as infile, \
             open(response_filename, 'w') as response_file, \
-            open(selection_filename, 'w') as selection_file:
+            open(selection_filename, 'w') as selection_file, \
+            open(partner_filename, 'w') as partner_file:
         for line in infile:
             if line.strip():
                 tokens = line.split()
@@ -22,6 +24,7 @@ def parse_deal(mode, split):
                 partner_input = tokens[partner_input_i + 1:-1]
                 dump_responses(mode, input, dialogue, output, partner_input, response_file)
                 dump_selection(mode, input, dialogue, output, partner_input, selection_file)
+                dump_partner(mode, input, dialogue, output, partner_input, partner_file)
                 selection_file.write('\n')
 
 
@@ -67,6 +70,31 @@ def dump_selection(mode, input, dialogue, output, partner_input, selection_file)
         }
 
     json.dump(inst_dict, selection_file)
+
+
+def dump_partner(mode, input, dialogue, output, partner_input, partner_file):
+    if mode == '_repro':
+        return
+
+    start = 0
+    while True:
+        try:
+            start = start + 1 + dialogue[start + 1:].index('YOU:')
+        except ValueError:
+            return
+
+        try:
+            end = start + 1 + dialogue[start + 1:].index('THEM:')
+        except ValueError:
+            end = len(dialogue)
+        if dialogue[end - 1] == '<selection>':
+            end += 1
+
+        json.dump({
+            'input': ' '.join(input + dialogue[:start - 1]),
+            'output': ' '.join(partner_input),
+        }, partner_file)
+        partner_file.write('\n')
 
 
 if __name__ == '__main__':
