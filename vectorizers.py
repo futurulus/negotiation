@@ -324,6 +324,15 @@ class SelectionVectorizer():
 
 
 class SelfPlayVectorizer(NegotiationVectorizer):
+    def inherit(self, parent):
+        '''
+        Modifies this vectorizer *in-place* to use all the indices and subvectorizers
+        from `parent`. Note that subvectorizers are shallow-copied; be careful when
+        reusing `parent` (particularly, calling `add` and `add_all` on `parent` will
+        result in changes to this vectorizer as well).
+        '''
+        self.__dict__.update(parent.__dict__)
+
     def unvectorize(self, dialogue, sel_a, sel_b, reward, partner_reward):
         return self.unvectorize_all([dialogue], [sel_a], [sel_b], [reward], [partner_reward])
 

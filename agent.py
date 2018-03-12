@@ -207,7 +207,7 @@ class Negotiator(th.nn.Module):
     def sel_indices_to_selection(self, feasible_sels, sel_indices):
         return feasible_sels[lrange(feasible_sels.size()[0]), sel_indices.data, :]
 
-    def speak(self, eos_token=None):
+    def speak(self, you_token, eos_token=None):
         empty_resp_indices = th.autograd.Variable(cu(th.LongTensor([[0, 1]])))
         empty_resp_len = th.autograd.Variable(cu(th.LongTensor([2])))
         response_predict, response_score = self.dialogue(empty_resp_indices, empty_resp_len,
@@ -266,6 +266,7 @@ class RLAgent(th.nn.Module):
         self.partner = partner
         self.vectorizer = vectorizer
         self.eos = th.LongTensor(self.vectorizer.resp_vec.vectorize(['<eos>'])[0])[0]
+        self.you = th.LongTensor(self.vectorizer.resp_vec.vectorize(['YOU:'])[0])[0]
 
         self.epsilon = options.rl_epsilon
         self.max_dialogue_len = options.max_dialogue_len
@@ -288,12 +289,15 @@ class RLAgent(th.nn.Module):
             agent = self.negotiator if my_turn else self.partner
             other = self.partner if my_turn else self.negotiator
 
-            output_predict, output_score = agent.speak(self.eos)
+            output_predict, output_score = agent.speak(self.you, self.eos)
             (agent_resp_indices, resp_len), policy_score = self.policy(output_predict, output_score)
-            agent.listen(agent_resp_indices, resp_len)
+            start_with_you = th.autograd.Variable(cu(th.LongTensor([[self.you]])))
+            agent_resp_indices = th.cat([start_with_you.expand(resp_len.size()[0], 1),
+                                         agent_resp_indices], 1)
+            agent.listen(agent_resp_indices, resp_len + 1)
 
             other_resp_indices = self.transform_dialogue(agent_resp_indices)
-            other.listen(other_resp_indices, resp_len)
+            other.listen(other_resp_indices, resp_len + 1)
 
             dialogue.append(((agent_resp_indices if my_turn else other_resp_indices), resp_len))
             policy_scores.append(policy_score)

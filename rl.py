@@ -1,5 +1,6 @@
 import pickle
 import torch as th
+import numpy as np
 
 from stanza.monitoring import progress
 from stanza.research import config
@@ -14,10 +15,10 @@ from agent import RLAgent, Negotiator, SupervisedLoss, RLLoss
 parser = config.get_options_parser()
 
 parser.add_argument('--load_init_a', default='',
-                    help='Pretrained module file to load for initializing module A in '
+                    help='Pretrained model file to load for initializing module A in '
                          'reinforcement learning.')
 parser.add_argument('--load_init_b', default='',
-                    help='Pretrained module file to load for initializing module B in '
+                    help='Pretrained model file to load for initializing module B in '
                          'reinforcement learning.')
 parser.add_argument('--max_dialogue_len', type=int, default=20,
                     help='Maximum number of turns in a reinforcement learning dialogue rollout.')
@@ -38,32 +39,42 @@ class NegotiationLearner(seq2seq.SimpleSeq2SeqLearner):
         super(NegotiationLearner, self).__init__()
 
     def build_model(self, vectorizer):
-        goal_delims = tuple(int(i) for i in
-                            vectorizer.goal_vec.vectorize(['<input>', '</input>'])[0][:2])
-        resp_delims = tuple(int(i) for i in
-                            vectorizer.resp_vec.vectorize(['<dialogue>', '</dialogue>'])[0][:2])
-        negotiator_opts = {
-            'options': self.options,
-            'goal_vocab': vectorizer.goal_vec.vocab_size(),
-            'resp_vocab': vectorizer.resp_vec.vocab_size(),
-            'sel_vocab': vectorizer.sel_vec.vocab_size(),
-            'delimiters': (goal_delims, resp_delims),
-        }
+        def negotiator_opts(vec):
+            goal_delims = tuple(int(i) for i in
+                                vec.goal_vec.vectorize(['<input>', '</input>'])[0][:2])
+            resp_delims = tuple(int(i) for i in
+                                vec.resp_vec.vectorize(['<dialogue>', '</dialogue>'])[0][:2])
+
+            return {
+                'options': self.options,
+                'goal_vocab': vec.goal_vec.vocab_size(),
+                'resp_vocab': vec.resp_vec.vocab_size(),
+                'sel_vocab': vec.sel_vec.vocab_size(),
+                'delimiters': (goal_delims, resp_delims),
+            }
+
         if self.options.load_init_a:
             with open(self.options.load_init_a, 'rb') as infile:
-                module_a = pickle.load(infile)
-                if isinstance(module_a, neural.TorchModel):
-                    module_a = module_a.module
+                model_a = pickle.load(infile)
+                if isinstance(model_a, NegotiationLearner):
+                    model_a = model_a.model
+                assert isinstance(model_a, neural.TorchModel)
+                module_a = model_a.module
+                vectorizer.inherit(model_a.vectorizer)
         else:
-            module_a = Negotiator(**negotiator_opts)
+            module_a = Negotiator(**negotiator_opts(vectorizer))
 
         if self.options.load_init_b:
             with open(self.options.load_init_a, 'rb') as infile:
-                self.module_b = pickle.load(infile)
-                if isinstance(self.module_b, neural.TorchModel):
-                    self.module_b = self.module_b.module
+                model_b = pickle.load(infile)
+                if isinstance(model_b, NegotiationLearner):
+                    model_a = model_b.model
+                assert isinstance(self.module_b, neural.TorchModel)
+                self.module_b = self.model_b.module
+                assert model_b.vectorizer.resp_vec.tokens == vectorizer.resp_vec.tokens, \
+                    "Vectorizers aren't compatible. Were models a and b trained on the same data?"
         else:
-            self.module_b = Negotiator(**negotiator_opts)
+            self.module_b = Negotiator(**negotiator_opts(vectorizer))
             self.module_b.load_state_dict(module_a.state_dict())
 
         return self.wrap_negotiator(module_a, vectorizer)
@@ -99,8 +110,8 @@ class NegotiationLearner(seq2seq.SimpleSeq2SeqLearner):
 
         # Don't write activations to pickle file
         self.model.module.apply(clear_activations)
-        with config.open('module_a.pkl', 'wb') as outfile:
-            pickle.dump(self.model.module, outfile)
+        with config.open('model_a.pkl', 'wb') as outfile:
+            pickle.dump(self.model, outfile)
 
     def collate_preds(self, preds, detokenize):
         raise NotImplementedError
@@ -157,7 +168,8 @@ class RLLearner(NegotiationLearner):
                 for d, sa, sb, ra, rb in zip(*preds)]
 
     def collate_scores(self, scores):
-        return list(zip(*scores))
+        dialogue_scores, selection_scores = scores
+        return list(zip([np.sum(dialogue_scores)], selection_scores['target']))
 
 
 class StaticSelfPlayLearner(RLLearner):
