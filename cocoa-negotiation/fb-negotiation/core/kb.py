@@ -3,9 +3,12 @@ from cocoa.core.kb import KB as BaseKB
 class KB(BaseKB):
     def __init__(self, attributes, items):
         super(KB, self).__init__(attributes)
-        self.items = items
-        self.item_counts = {item['Name']: item['Count'] for item in items}
-        self.item_values = {item['Name']: item['Value'] for item in items}
+        self.items = []
+        for name, value in items['Item_values'].iteritems():
+            self.items.append({'Name': name, 'Value': value,
+                               'Count': items['Item_counts'][name]})
+        self.item_counts = {item['Name']: item['Count'] for item in self.items}
+        self.item_values = {item['Name']: item['Value'] for item in self.items}
 
     def to_dict(self):
         return self.items

@@ -3,11 +3,11 @@ from model.manager import Manager
 from model.generator import Templates, Generator
 from rulebased_system import RulebasedSystem, add_rulebased_arguments
 from cmd_system import CmdSystem
-from neural_system import NeuralSystem, add_neural_system_arguments
+# from neural_system import NeuralSystem, add_neural_system_arguments
 
 def add_system_arguments(parser):
     parser.add_argument('--mappings', default='.', help='Directory to save mappings/vocab')
-    add_neural_system_arguments(parser)
+    # add_neural_system_arguments(parser)
     add_rulebased_arguments(parser)
 
 def get_system(name, args, schema=None, timed=False, model_path=None):
