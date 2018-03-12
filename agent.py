@@ -326,7 +326,7 @@ class RLAgent(th.nn.Module):
         if rng.random_sample() <= self.epsilon:
             return output_predict['sample'], output_score['sample']
         else:
-            return output_predict['beam'], th.autograd.Variable(cu(th.FloatTensor([1.0])))
+            return output_predict['beam'], th.autograd.Variable(cu(th.FloatTensor([0.0])))
             # output_score['beam']
 
     def transform_dialogue(self, resp_indices):
