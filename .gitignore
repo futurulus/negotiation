@@ -1,9 +1,11 @@
 runs
-data/
+data
 .cache/
 activate
 activate_py2
 tensorflow
 !third-party/tensorflow
+!cocoa-negotiation/*/data
+!cocoa-negotiation/data
 __pycache__
 *.pyc
