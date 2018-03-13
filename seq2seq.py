@@ -40,6 +40,8 @@ parser.add_argument('--max_length', type=int, default=100,
                     help='Maximum length of predicted output in decoding and sampling.')
 parser.add_argument('--bidirectional', type=config.boolean, default=False,
                     help='If True, use a bidirectional recurrent layer for encoding.')
+parser.add_argument('--attention', type=config.boolean, default=False,
+                    help='If True, use attention over the encoding (RNN only).')
 
 
 class SimpleSeq2SeqLearner(learner.Learner):
@@ -111,6 +113,7 @@ class SimpleSeq2SeqLearner(learner.Learner):
                          dropout=self.options.dropout,
                          rnn_cell=self.options.rnn_cell,
                          bidirectional=self.options.bidirectional,
+                         attention=self.options.attention,
                          delimiters=delimiters,
                          monitor_activations=self.options.monitor_activations)
         model = neural.TorchModel(
@@ -186,6 +189,7 @@ class RNN2RNN(Seq2Seq):
                  num_layers=1,
                  beam_size=1,
                  bidirectional=False,
+                 attention=False,
                  max_len=None,
                  monitor_activations=True):
         self.activations = neural.Activations()
@@ -198,6 +202,8 @@ class RNN2RNN(Seq2Seq):
                              cell_size=cell_size, embed_size=embed_size,
                              dropout=dropout, num_layers=num_layers,
                              rnn_cell=rnn_cell,
+                             bidirectional=bidirectional,
+                             attention=attention,
                              delimiters=delimiters,
                              activations=child_activations)
         decoder = RNNDecoder(tgt_vocab=tgt_vocab,
@@ -255,6 +261,7 @@ class RNNEncoder(th.nn.Module):
                  rnn_cell='LSTM',
                  num_layers=1,
                  bidirectional=False,
+                 attention=False,
                  activations=None):
         super(RNNEncoder, self).__init__()
 
@@ -281,6 +288,9 @@ class RNNEncoder(th.nn.Module):
                          bidirectional=bidirectional)
         self.h_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
         self.c_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
+        self.use_attention = attention
+        if attention:
+            self.attention = Attention(cell_size, activations=activations)
 
     def forward(self, src_indices, src_lengths):
         a = self.activations
@@ -299,6 +309,13 @@ class RNNEncoder(th.nn.Module):
             a.enc_h_out = enc_state
             result = (a.enc_out,
                       (self.concat_directions(a.enc_h_out),))
+        if self.use_attention:
+            h_size = result[1][0].size()
+            attn_out, attn_weights = self.attention(result[0], src_lengths)
+            assert attn_out.size() == h_size[1:], (attn_out.size(), h_size[1:])
+            attn_out_layers = attn_out[None, :, :].expand(*h_size)
+            result = (result[0], (attn_out_layers,) + result[1][1:])
+            assert result[1][0].size() == h_size, (result[1][0].size(), h_size)
 
         if not self.monitor_activations:
             # Free up memory
@@ -315,6 +332,109 @@ class RNNEncoder(th.nn.Module):
                       .transpose(1, 2).contiguous())
             assert out.size()[2] == self.num_directions, out.size()
             return out.view(out.size()[0], out.size()[1], out.size()[2] * out.size()[3])
+
+
+class Attention(th.nn.Module):
+    def __init__(self, repr_size, activations=None):
+        super(Attention, self).__init__()
+
+        self.repr_size = repr_size
+
+        self.monitor_activations = (activations is not None)
+        if isinstance(activations, neural.Activations):
+            self.activations = activations
+        else:
+            self.activations = neural.Activations()
+
+        self.hidden1 = th.nn.Linear(repr_size, repr_size)
+        self.hidden2 = th.nn.Linear(repr_size, repr_size)
+        self.target = th.nn.Linear(1, repr_size)
+        self.output = th.nn.Linear(repr_size, repr_size)
+
+        self.dump_index = -1
+        self.dump_file = None
+
+    def __del__(self):
+        self.close_dump_file()
+
+    def close_dump_file(self):
+        try:
+            if hasattr(self, 'dump_file') and self.dump_file is not None:
+                self.dump_file.close()
+                self.dump_file = None
+        except IOError as e:
+            print("Couldn't close attention weights file: {}".format(e))
+
+    def train(self, mode=True):
+        prev = self.training
+        super(Attention, self).train(mode)
+
+        if mode == prev:
+            return
+        self.close_dump_file()
+        if mode:
+            return
+
+        self.dump_index += 1
+        self.close_dump_file()
+        try:
+            self.dump_file = config.open('attn_weights.{}.jsons'.format(self.dump_index), 'w')
+        except IOError as e:
+            print("Couldn't open attention weights file: {}".format(e))
+
+    def dump_weights(self, weights):
+        if self.dump_file is None:
+            return
+        weights_list = weights.tolist()
+        try:
+            for seq in weights_list:
+                print('[{}]'.format(', '.join('{:.3f}'.format(e) for e in seq)),
+                      file=self.dump_file)
+        except IOError as e:
+            print("Couldn't write to attention weights file: {}".format(e))
+
+    def forward(self, outputs, src_lengths):
+        a = self.activations
+
+        assert outputs.dim() == 3, outputs.size()
+        assert outputs.size()[2] == self.repr_size, (outputs.size(), self.repr_size)
+        batch_size, max_len, repr_size = outputs.size()
+
+        a.attn_h1 = th.nn.Tanh()(self.hidden1(outputs))
+        a.attn_h2 = self.hidden2(outputs)
+        assert a.attn_h2.size() == (batch_size, max_len, repr_size), \
+            (a.attn_h2.size(), (batch_size, max_len, repr_size))
+        init_var = th.autograd.Variable(cu(th.FloatTensor([1.0])))
+        a.target = self.target(init_var)
+        assert a.target.size() == (repr_size,), (a.target.size(), repr_size)
+        a.attn_scores = th.matmul(a.attn_h2, a.target)
+        assert a.attn_scores.size() == (batch_size, max_len), \
+            (a.attn_scores.size(), (batch_size, max_len))
+        attn_mask = th.autograd.Variable(cu(
+            th.log((lrange(max_len)[None, :] < src_lengths.data[:, None]).float())
+        ))
+        a.attn_weights = th.exp(th.nn.LogSoftmax()(a.attn_scores + attn_mask))
+        assert a.attn_weights.size() == (batch_size, max_len), \
+            (a.attn_weights.size(), (batch_size, max_len))
+        a.attn_out = th.matmul(a.attn_weights[:, None, :], outputs)[:, 0, :]
+        assert a.attn_out.size() == (batch_size, repr_size), \
+            (a.attn_out.size(), (batch_size, repr_size))
+
+        self.dump_weights(a.attn_weights.data)
+
+        result = a.attn_out, a.attn_weights
+
+        if not self.monitor_activations:
+            # Free up memory
+            a.__dict__.clear()
+
+        return result
+
+    def __getstate__(self):
+        d = self.__dict__.copy()
+        d['dump_file'] = None
+        d['dump_index'] = -1
+        return d
 
 
 class ConvEncoder(th.nn.Module):
