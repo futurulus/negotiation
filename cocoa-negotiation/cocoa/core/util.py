@@ -1,7 +1,7 @@
 import random
 import ujson as json
 import string
-import cPickle as pickle
+from six.moves import cPickle as pickle
 import numpy as np
 
 def random_multinomial(probs):
@@ -15,7 +15,7 @@ def random_multinomial(probs):
         i += 1
 
 def generate_uuid(prefix):
-    return prefix + '_' + ''.join([random.choice(string.digits + string.letters) for _ in range(16)])
+    return prefix + '_' + ''.join([random.choice(string.digits + string.ascii_letters) for _ in range(16)])
 
 def read_json(path):
     try:
@@ -25,11 +25,11 @@ def read_json(path):
 
 def write_json(raw, path):
     with open(path, 'w') as out:
-        print >>out, json.dumps(raw)
+        print(json.dumps(raw), file=out)
 
 def read_pickle(path):
     with open(path, 'rb') as fin:
-        return pickle.load(fin)
+        return pickle.load(fin, encoding='latin1')
 
 def write_pickle(obj, path):
     with open(path, 'wb') as fout:

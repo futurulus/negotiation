@@ -27,7 +27,7 @@ class Utterance(object):
 class LogicalForm(object):
     def __init__(self, intent, **kwargs):
         self.intent = intent
-        for k, v in kwargs.iteritems():
+        for k, v in kwargs.items():
             setattr(self, k, v)
 
     def to_dict(self):
@@ -37,7 +37,7 @@ class LogicalForm(object):
 
     def __str__(self):
         attrs = vars(self)
-        s = ' '.join(['{}={}'.format(k, v) for k, v in attrs.iteritems()])
+        s = ' '.join(['{}={}'.format(k, v) for k, v in attrs.items()])
         return s
 
 class Parser(object):
@@ -96,4 +96,3 @@ class Parser(object):
     def parse_action(self, event):
         intent = event.action
         return Utterance(logical_form=LogicalForm(intent), template=['<{}>'.format(intent)])
-

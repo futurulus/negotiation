@@ -1,5 +1,5 @@
 import numpy as np
-import pandas as pd
+# import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from cocoa.core.util import read_pickle, write_pickle
@@ -22,7 +22,7 @@ class Generator(object):
         locs.append(locs[-1] & cond)
 
     def _select_filter(self, locs):
-        print [np.sum(loc) for loc in locs]
+        print([np.sum(loc) for loc in locs])
         for loc in locs[::-1]:
             if np.sum(loc) > 0:
                 return loc

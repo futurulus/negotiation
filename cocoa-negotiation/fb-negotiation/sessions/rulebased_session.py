@@ -9,7 +9,6 @@ from cocoa.core.entity import is_entity
 from cocoa.model.parser import LogicalForm as LF
 from cocoa.sessions.rulebased_session import RulebasedSession as BaseRulebasedSession
 
-from session import Session
 from core.tokenizer import tokenize
 from model.parser import Parser, Utterance
 from model.dialogue_state import DialogueState
@@ -30,7 +29,7 @@ class RulebasedSession(BaseRulebasedSession):
         self.partner_item_weights = {item: 1. for item in self.items}
         self.config = default_config if config is None else config
 
-        items = [(item, value, self.item_counts[item]) for item, value in self.item_values.iteritems()]
+        items = [(item, value, self.item_counts[item]) for item, value in self.item_values.items()]
         # Sort items by value from high to low
         self.sorted_items = sorted(items, key=lambda x: x[1], reverse=True)
         self.init_proposal()
@@ -51,7 +50,7 @@ class RulebasedSession(BaseRulebasedSession):
             target = self.config.target
             my_split = {item: 0 for item in self.items}
             for item, value, count in self.sorted_items:
-                for i in xrange(count):
+                for i in range(count):
                     if points >= target:
                         break
                     my_split[item] += 1
@@ -60,21 +59,21 @@ class RulebasedSession(BaseRulebasedSession):
         self.state.my_proposal = self.parser.merge_proposal(split, self.item_counts, self.agent)
 
     def get_points(self, offer):
-        return sum([count * self.item_values[item] for item, count in offer.iteritems()])
+        return sum([count * self.item_values[item] for item, count in offer.items()])
 
     def compromise(self, my_offer):
         compromised_offer = copy.deepcopy(my_offer)
         partner_item_values = self.partner_item_weights
         #item_scores = [(item, self.item_values[item] / (partner_item_values[item] if partner_item_values[item] != 0 else 0.5))
         item_scores = [(item, self.item_values[item] - partner_item_values[item])
-                for item, count in my_offer.iteritems()
+                for item, count in my_offer.items()
                 if count > 0]
         item_scores = sorted(item_scores, key=lambda x: x[1])
         compromised_item = item_scores[0][0]
         compromised_offer[compromised_item] -= 1
 
         # Take what they don't want
-        for item, weight in self.partner_item_weights.iteritems():
+        for item, weight in self.partner_item_weights.items():
             if self.item_values[item] > 0 and weight < 0 and item != compromised_item:
                 compromised_offer[item] = self.kb.item_counts[item]
 
@@ -117,7 +116,7 @@ class RulebasedSession(BaseRulebasedSession):
         """
         proposal = proposal[self.parser.ME]
         kwargs = {}
-        for item, count in proposal.iteritems():
+        for item, count in proposal.items():
             kwargs[item] = '{}s'.format(item) if count > 1 else item
             kwargs['{}-number'.format(item)] = count
         s = template.format(**kwargs)
@@ -152,7 +151,7 @@ class RulebasedSession(BaseRulebasedSession):
 
     def offer_to_string(self, offer):
         items = ['{count} {item}{plural}'.format(item=item, count=count, plural='s' if count > 1 else '')
-                for item, count in offer.iteritems() if count > 0]
+                for item, count in offer.items() if count > 0]
         return ' and '.join(items)
 
     def clarify(self):
@@ -170,7 +169,7 @@ class RulebasedSession(BaseRulebasedSession):
     def receive(self, event):
         super(RulebasedSession, self).receive(event)
         if self.state.partner_proposal is not None:
-            for item, count in self.state.partner_proposal[self.partner].iteritems():
+            for item, count in self.state.partner_proposal[self.partner].items():
                 self.partner_item_weights[item] += (1 if count > 0 else -1)
 
     def wait(self):

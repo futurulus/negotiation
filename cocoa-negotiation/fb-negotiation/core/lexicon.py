@@ -40,4 +40,4 @@ class Lexicon(object):
 ############### TEST ###############
 if __name__ == '__main__':
     lexicon = Lexicon(['ball', 'hat', 'book'])
-    print lexicon.link_entity('i need 3 books'.split())
+    print(lexicon.link_entity('i need 3 books'.split()))

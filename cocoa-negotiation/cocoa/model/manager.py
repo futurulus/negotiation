@@ -14,8 +14,8 @@ class Manager(object):
         counter = count_ngrams(n, vocab, sequences, pad_left=True, pad_right=False)
         model = MLENgramModel(counter)
         actions = vocab.keys()
-        #print model.score('init-price', ('<start>',))
-        #print model.ngrams.most_common(10)
+        #print(model.score('init-price', ('<start>',)))
+        #print(model.ngrams.most_common(10))
         return cls(model, actions)
 
     def available_actions(self, state):
@@ -46,10 +46,10 @@ class Manager(object):
         if len(freqdist) == 0:
             return None
         best_action = max(freqdist, key=lambda x: x[1])[0]
-        print 'context:', context
-        #print 'dist:', freqdist
-        print 'available actions:', actions
-        print 'action:', best_action
+        print('context: {}'.format(context))
+        #print('dist: {}'.format(freqdist))
+        print('available actions: {}'.format(actions))
+        print('action: {}'.format(best_action))
         return best_action
 
     def save(self, output):

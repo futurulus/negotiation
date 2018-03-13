@@ -1,8 +1,8 @@
 from core.lexicon import Lexicon
 from model.manager import Manager
 from model.generator import Templates, Generator
-from rulebased_system import RulebasedSystem, add_rulebased_arguments
-from cmd_system import CmdSystem
+from .rulebased_system import RulebasedSystem, add_rulebased_arguments
+from .cmd_system import CmdSystem
 # from neural_system import NeuralSystem, add_neural_system_arguments
 
 def add_system_arguments(parser):

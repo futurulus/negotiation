@@ -38,8 +38,11 @@ class NgramModelVocabulary(Counter):
     """
 
     def __init__(self, unknown_cutoff, *counter_args):
-        Counter.__init__(self, *counter_args)
-        self.cutoff = unknown_cutoff
+        if isinstance(unknown_cutoff, dict):
+            Counter.__init__(self, unknown_cutoff, *counter_args)
+        else:
+            Counter.__init__(self, *counter_args)
+            self.cutoff = unknown_cutoff
 
     @property
     def cutoff(self):
@@ -67,6 +70,9 @@ class NgramModelVocabulary(Counter):
 
     def __copy__(self):
         return self.__class__(self._cutoff, self)
+
+    def __setstate__(self, state):
+        raise NotImplementedError
 
 
 @compat.python_2_unicode_compatible

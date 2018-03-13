@@ -1,14 +1,21 @@
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
 
 from cocoa.model.generator import Templates as BaseTemplates, Generator as BaseGenerator
 
 from core.tokenizer import detokenize
-from parser import Parser
+
+import six
+if six.PY3:
+    def utf8(s):
+        return s
+else:
+    def utf8(s):
+        return s.encode('utf-8')
+
 
 class Generator(BaseGenerator):
     def get_filter(self, used_templates=None, proposal_type=None, context_tag=None, tag=None, **kwargs):
-        print 'filter:', proposal_type, context_tag, tag
+        print('filter: {} {} {}'.format(proposal_type, context_tag, tag))
         locs = [super(Generator, self).get_filter(used_templates)]
         if proposal_type:
             self._add_filter(locs, self.templates.proposal_type == proposal_type)
@@ -40,7 +47,7 @@ class Templates(BaseTemplates):
 
     def add_template(self, utterance, dialogue_state):
         if self.finalized:
-            print 'Cannot add templates.'
+            print('Cannot add templates.')
             return
         if utterance.ambiguous_template or self.ambiguous_template(utterance.template):
             return
@@ -65,12 +72,12 @@ class Templates(BaseTemplates):
             proposal_type, context_tag, response_tag = group
             if response_tag in ('reject', 'select'):
                 continue
-            print '='*40
-            print 'proposal_type={}, context={}, response={}'.format(proposal_type, context_tag, response_tag)
-            print '='*40
+            print('='*40)
+            print('proposal_type={}, context={}, response={}'.format(proposal_type, context_tag, response_tag))
+            print('='*40)
             rows = [x[1] for x in df.get_group(group).iterrows()]
             #rows = sorted(rows, key=lambda r: r['count'], reverse=True)
             for i, row in enumerate(rows):
                 if i == n:
                     break
-                print row['template'].encode('utf-8')
+                print(utf8(row['template']))

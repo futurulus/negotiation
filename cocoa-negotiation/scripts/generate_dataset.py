@@ -48,6 +48,12 @@ else:
 agents = [get_system(name, args, schema, model_path=model_path) for name in args.agents]
 num_examples = args.scenario_offset
 
+def json_make_serializable(obj):
+    if isinstance(obj, np.int64):
+        return int(obj)
+    else:
+        return obj
+
 summary_map = {}
 def generate_examples(description, examples_path, max_examples, remove_fail, max_turns):
     global num_examples
@@ -68,11 +74,11 @@ def generate_examples(description, examples_path, max_examples, remove_fail, max
         examples.append(ex)
         num_examples += 1
     with open(examples_path, 'w') as out:
-        print >>out, json.dumps([e.to_dict() for e in examples])
+        print(json.dumps([e.to_dict() for e in examples], default=json_make_serializable), file=out)
     if num_failed == 0:
-        print 'All {} dialogues succeeded!'.format(num_examples)
+        print('All {} dialogues succeeded!'.format(num_examples))
     else:
-        print 'Number of failed dialogues:', num_failed
+        print('Number of failed dialogues: {}'.format(num_failed))
 
 if args.train_max_examples:
     generate_examples('train', args.train_examples_paths[0], args.train_max_examples, args.remove_fail, args.max_turns)

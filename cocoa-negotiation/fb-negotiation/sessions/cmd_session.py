@@ -1,4 +1,4 @@
-from session import Session
+from .session import Session
 
 class CmdSession(Session):
     def __init__(self, agent, kb):
@@ -19,7 +19,7 @@ class CmdSession(Session):
         raw_tokens = message.split()
         tokens = self.remove_nonprintable(raw_tokens)
 
-        print tokens
+        print(tokens)
 
         if len(tokens) >= 2 and tokens[0] == '<select>':
             t = [int(token) for idx, token in enumerate(tokens) if idx > 0]
@@ -31,4 +31,4 @@ class CmdSession(Session):
             return self.message(" ".join(tokens))
 
     def receive(self, event):
-        print event.data
+        print(event.data)

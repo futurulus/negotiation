@@ -97,7 +97,7 @@ class Parser(BaseParser):
 
         # Inform: don't need item
         if proposal[self.ME] and not proposal[self.YOU] and sum(proposal[self.ME].values()) == 0:
-            for item, count in item_counts.iteritems():
+            for item, count in item_counts.items():
                 # Take everything else
                 if item not in proposal[self.ME]:
                     proposal[self.ME][item] = count
@@ -117,7 +117,7 @@ class Parser(BaseParser):
                         proposal[agent][item] = 0
 
         partner = 1 - speaking_agent
-        for item, count in item_counts.iteritems():
+        for item, count in item_counts.items():
             my_count = proposal[speaking_agent].get(item)
             if my_count is not None:
                 proposal[partner][item] = count - my_count
@@ -147,7 +147,7 @@ class Parser(BaseParser):
         """
         count = None
         # Search backward
-        for j in xrange(i-1, -1, -1):
+        for j in range(i-1, -1, -1):
             token = tokens[j]
             if count is not None or token in self.sentence_delimiter or self._is_item(token):
                 break
@@ -164,7 +164,7 @@ class Parser(BaseParser):
 
         if count is None:
             # Search forward
-            for j in xrange(i+1, len(tokens)):
+            for j in range(i+1, len(tokens)):
                 token = tokens[j]
                 if count is not None or token in self.sentence_delimiter or self._is_item(token):
                     break
@@ -251,7 +251,7 @@ class Parser(BaseParser):
         scenario = {'book':c[0] , 'hat':c[1], 'ball':c[2]}
         proposal, _, _ = self.parse_proposal(lexicon.link_entity(tokenize(raw_utterance)), scenario)
         if not proposal:
-            print 'No offer detected:', raw_utterance
+            print('No offer detected: {}'.format(raw_utterance))
             return False
 
         passed = True
@@ -267,10 +267,10 @@ class Parser(BaseParser):
           print("  There are {0} books, {1} hats, and {2} balls.".format(c[0], c[1], c[2]) )
           print("  Sentence: {0}".format(raw_utterance) )
           print("SYSTEM OUTPUT")
-          print 'For me:'
-          print proposal[self.ME]
-          print 'For you:'
-          print proposal[self.YOU]
+          print('For me:')
+          print(proposal[self.ME])
+          print('For you:')
+          print(proposal[self.YOU])
           print("  The correct proposal is {0} books, {1} hats, and {2} balls".format(d[0], d[1], d[2]) )
 
         print("------------------------------")

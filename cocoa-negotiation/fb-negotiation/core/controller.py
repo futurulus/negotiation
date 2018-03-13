@@ -25,7 +25,7 @@ class Controller(BaseController):
             # print("second_agent_proposal: {}".format(second_agent_proposal) )
             return False
 
-        for item, count in self.scenario.kbs[0].item_counts.iteritems():
+        for item, count in self.scenario.kbs[0].item_counts.items():
             item_proposal = first_agent_proposal[item] + second_agent_proposal[item]
             if int(count) != int(item_proposal):
                 return False
@@ -35,7 +35,7 @@ class Controller(BaseController):
     def calculate_reward(self, agent):
         agent_proposal = self.outcomes[agent]
         total_points = 0
-        for item, value in self.scenario.kbs[agent].item_values.iteritems():
+        for item, value in self.scenario.kbs[agent].item_values.items():
             total_points += agent_proposal[item] * value
         return total_points
 

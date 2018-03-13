@@ -1,4 +1,4 @@
-from parser import LogicalForm as LF, Utterance
+from .parser import LogicalForm as LF, Utterance
 
 class DialogueState(object):
     def __init__(self, agent, kb):
@@ -36,4 +36,3 @@ class DialogueState(object):
         self.utterance[agent] = utterance
         if agent == self.agent:
             self.done.add(utterance.lf.intent)
-

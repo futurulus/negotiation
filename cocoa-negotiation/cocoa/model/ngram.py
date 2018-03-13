@@ -8,7 +8,7 @@ from __future__ import unicode_literals, division
 from math import log
 
 from nltk import compat
-from util import safe_div
+from .util import safe_div
 
 
 NEG_INF = float("-inf")
@@ -175,5 +175,5 @@ if __name__ == '__main__':
     vocab = build_vocabulary(1, *sents)
     counter = count_ngrams(2, vocab, sents)
     model = MLENgramModel(counter)
-    print model.score('b', ('a',))
-    print model.order
+    print(model.score('b', ('a',)))
+    print(model.order)

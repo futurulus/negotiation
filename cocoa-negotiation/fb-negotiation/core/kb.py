@@ -4,7 +4,7 @@ class KB(BaseKB):
     def __init__(self, attributes, items):
         super(KB, self).__init__(attributes)
         self.items = []
-        for name, value in items['Item_values'].iteritems():
+        for name, value in items['Item_values'].items():
             self.items.append({'Name': name, 'Value': value,
                                'Count': items['Item_counts'][name]})
         self.item_counts = {item['Name']: item['Count'] for item in self.items}
@@ -34,9 +34,9 @@ class KB(BaseKB):
         return cls(attributes, items)
 
     def dump(self):
-        item_counts = ', '.join(['{count} {item}s'.format(count=c, item=n) for n, c in self.item_counts.iteritems()])
-        print 'Items Available: {}'.format(item_counts)
+        item_counts = ', '.join(['{count} {item}s'.format(count=c, item=n) for n, c in self.item_counts.items()])
+        print('Items Available: {}'.format(item_counts))
 
-        for item, value in self.item_values.iteritems():
-            print 'How you value {0}: {1} points'.format(item, value)
-        print '----------------'
+        for item, value in self.item_values.items():
+            print('How you value {0}: {1} points'.format(item, value))
+        print('----------------')
