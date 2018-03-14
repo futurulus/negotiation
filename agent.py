@@ -7,6 +7,7 @@ import neural
 import seq2seq
 import tokenizers
 from vectorizers import MAX_FEASIBLE, NUM_ITEMS, GOAL_SIZE
+import thutils
 from thutils import index_sequence, lrange, log_softmax, maybe_cuda as cu
 
 rng = get_rng()
@@ -153,6 +154,8 @@ class HumanAgent(Agent):
 
 class TwoModelAgent(Agent):
     def new_game(self, game):
+        if not hasattr(self, 'agent_id'):
+            self.agent_id = random_agent_name()
         self.game = game
         self.dialogue = []
         self.selection = None
@@ -161,33 +164,39 @@ class TwoModelAgent(Agent):
         resp_model, sel_model = self.models
 
         inst = self.get_input_instance(self.game, self.dialogue)
-        if self.selection:
-            output = sel_model.predict([inst], random=True, verbosity=0)[0]
+        if self.selection is not None:
+            with thutils.device_context(sel_model.options.device):
+                output = sel_model.predict([inst], random=True, verbosity=0)[0]
             if self.verbosity >= 5:
-                print(f'      --OUTPUT: {repr(output)}')
+                print(f'      --OUTPUT [{self.agent_id}]: {repr(output)}')
             return self.parse_selection(output, self.game[0])
         else:
-            response = resp_model.predict([inst], random=True, verbosity=0)[0]
+            with thutils.device_context(resp_model.options.device):
+                response = resp_model.predict([inst], random=True, verbosity=0)[0]
             if self.verbosity >= 5:
-                print(f'      --RESPONSE: {repr(response)}')
+                print(f'      --RESPONSE [{self.agent_id}]: {repr(response)}')
+            self.dialogue.append('YOU: ' + response)
             if response == '<selection>':
-                output = sel_model.predict([inst], random=True, verbosity=0)[0]
+                inst = self.get_input_instance(self.game, self.dialogue)
+                with thutils.device_context(sel_model.options.device):
+                    output = sel_model.predict([inst], random=True, verbosity=0)[0]
                 if self.verbosity >= 5:
-                    print(f'      --OUTPUT: {repr(output)}')
-                return self.parse_selection(output, self.game[0])
+                    print(f'      --OUTPUT [{self.agent_id}]: {repr(output)}')
+                self.selection = self.parse_selection(output, self.game[0])
+                return self.selection
             else:
                 return response
 
     def observe(self, result):
         if isinstance(result, list):
-            self.dialogue.append(f'YOU: <selection>')
+            self.dialogue.append(f'THEM: <selection>')
             if self.selection is None:
                 self.selection = result
             else:
                 return True
         else:
             assert isinstance(result, str)
-            self.dialogue.append('YOU: ' + result)
+            self.dialogue.append('THEM: ' + result)
 
         return False
 
@@ -195,9 +204,14 @@ class TwoModelAgent(Agent):
         pieces = [f'{game[0][0]} {game[1][0]} {game[0][1]} {game[1][1]} {game[0][2]} {game[1][2]}']
         for entry in dialogue:
             pieces.append(f'{entry} <eos>')
-        input = ' '.join(pieces)[:-len('<eos>')]
+        input = ' '.join(pieces)
+        if dialogue:
+            input = input[:-len(' <eos>')]
         from stanza.research.instance import Instance
-        return Instance(input, '')
+        result = Instance(input, '')
+        if self.verbosity >= 6:
+            print(result.__dict__)
+        return result
 
     def parse_selection(self, line, counts):
         if line.startswith('<'):
@@ -212,11 +226,19 @@ class TwoModelAgent(Agent):
 
     def outcome(self, outcome):
         if self.verbosity >= 5:
-            print(f"  --GAME (TwoModelAgent's POV): {self.game}")
+            print(f"  --GAME [{self.agent_id}]: {self.game}")
 
 
 def invert_proposal(response, game):
     return [c - s for c, s in zip(game[0], response)]
+
+
+def random_agent_name():
+    CONSONANTS = 'bcdfghjklmnpqrstvwxyz'
+    VOWELS = 'aeoiu'
+    return (CONSONANTS[rng.randint(len(CONSONANTS))] + 
+            VOWELS[rng.randint(len(VOWELS))] + 
+            CONSONANTS[rng.randint(len(CONSONANTS))]).title()
 
 
 AGENTS = {

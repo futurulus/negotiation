@@ -32,7 +32,7 @@ def dump_responses(mode, input, dialogue, output, partner_input, response_file):
     if mode == '_repro':
         return
 
-    start = 0
+    start = -1
     while True:
         try:
             start = start + 1 + dialogue[start + 1:].index('YOU:')
@@ -46,8 +46,9 @@ def dump_responses(mode, input, dialogue, output, partner_input, response_file):
         if dialogue[end - 1] == '<selection>':
             end += 1
 
+        input_end = max(0, start - 1)
         json.dump({
-            'input': ' '.join(input + dialogue[:start - 1]),
+            'input': ' '.join(input + dialogue[:input_end]),
             'output': ' '.join(dialogue[start + 1:end - 1])
         }, response_file)
         response_file.write('\n')

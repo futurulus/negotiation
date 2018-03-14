@@ -3,20 +3,32 @@ r'''
 python repl.py --response runs/response/model.pkl \
                --selection runs/selection/model.pkl \
 '''
+from stanza.research import config
+config.redirect_output()  # NOQA: imports not at top of file
+
 import random
 import pickle
 
-from stanza.research import config, output
+from stanza.research import output
 from stanza.monitoring import progress
 
 import agent
 from vectorizers import all_possible_subcounts
+import thutils
 
 parser = config.get_options_parser()
 parser.add_argument('--agent_a', default='HumanAgent', choices=agent.AGENTS,
                     help='Class name for agent A in dialogue simulation.')
 parser.add_argument('--agent_b', default='TwoModelAgent', choices=agent.AGENTS,
                     help='Class name for agent B in dialogue simulation.')
+parser.add_argument('--device_a', default=[], nargs='*',
+                    help='The devices to use in PyTorch for model A ("cpu" or "gpu[0-n]"). If None, '
+                         'pick a free-ish device automatically. Should be the same number and '
+                         'appear in the same order as in --load_a.')
+parser.add_argument('--device_b', default=[], nargs='*',
+                    help='The devices to use in PyTorch for model B ("cpu" or "gpu[0-n]"). If None, '
+                         'pick a free-ish device automatically. Should be the same number and '
+                         'appear in the same order as in --load_b.')
 parser.add_argument('--load_a', metavar='MODEL_FILE', default=[], nargs='*',
                     help='Model pickle file to load for agent A (two files as different arguments ='
                          ' response.pkl selection.pkl in the case of TwoModelAgent).')
@@ -36,12 +48,22 @@ def repl():
 
     models_a = []
     models_b = []
-    for a_filename in options.load_a:
+    assert len(options.load_a) == len(options.device_a), (options.load_a, options.device_a)
+    assert len(options.load_b) == len(options.device_b), (options.load_b, options.device_b)
+    for a_filename, device in zip(options.load_a, options.device_a):
+        if options.verbosity >= 2:
+            print(f'Loading {a_filename}...')
         with open(a_filename, 'rb') as infile:
-            models_a.append(pickle.load(infile))
-    for b_filename in options.load_b:
+            with thutils.device_context(device):
+                models_a.append(pickle.load(infile))
+                assert models_a[-1].options.device == device, models_a[-1].options.device
+    for b_filename, device in zip(options.load_b, options.device_b):
+        if options.verbosity >= 2:
+            print(f'Loading {b_filename}...')
         with open(b_filename, 'rb') as infile:
-            models_b.append(pickle.load(infile))
+            with thutils.device_context(device):
+                models_b.append(pickle.load(infile))
+                assert models_b[-1].options.device == device, models_b[-1].options.device
     agent_a = agent.AGENTS[options.agent_a](models_a, options.verbosity)
     agent_b = agent.AGENTS[options.agent_b](models_b, options.verbosity)
 
