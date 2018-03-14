@@ -126,13 +126,14 @@ class SimpleSeq2SeqLearner(learner.Learner):
         return model
 
     def validate_and_log(self, validation_instances, metrics, writer, epoch):
-        validation_results = self.validate(validation_instances, metrics, iteration=epoch)
+        validation_results = self.validate(validation_instances, metrics,
+                                           iteration=epoch, pass_split=True)
         if writer is not None:
             for key, value in validation_results.items():
                 tag = 'val/' + key.split('.', 1)[1].replace('.', '/')
                 writer.log_scalar(epoch, tag, value)
 
-    def predict_and_score(self, eval_instances, random=False, verbosity=4):
+    def predict_and_score(self, eval_instances, random=False, split='default', verbosity=4):
         predictions = []
         scores = []
 
@@ -145,7 +146,7 @@ class SimpleSeq2SeqLearner(learner.Learner):
             if verbosity > 2:
                 progress.progress(b)
             outputs_batch, scores_batch = self.model.eval([self.instance_to_tuple(inst)
-                                                           for inst in batch])
+                                                           for inst in batch], split=split)
             preds_batch = outputs_batch['sample' if random else 'beam']
             detokenized = self.collate_preds(preds_batch, detokenize)
             predictions.extend(detokenized)
@@ -290,7 +291,7 @@ class RNNEncoder(th.nn.Module):
         self.c_init = th.nn.Linear(1, cell_size * num_layers, bias=False)
         self.use_attention = attention
         if attention:
-            self.attention = Attention(cell_size, activations=activations)
+            self.attention = Attention(cell_size, activations=activations, save_weights=True)
 
     def forward(self, src_indices, src_lengths):
         a = self.activations
@@ -313,7 +314,7 @@ class RNNEncoder(th.nn.Module):
             h_size = result[1][0].size()
             attn_out, attn_weights = self.attention(result[0], src_lengths)
             assert attn_out.size() == h_size[1:], (attn_out.size(), h_size[1:])
-            attn_out_layers = attn_out[None, :, :].expand(*h_size)
+            attn_out_layers = attn_out[None, :, :].expand(*h_size).contiguous()
             result = (result[0], (attn_out_layers,) + result[1][1:])
             assert result[1][0].size() == h_size, (result[1][0].size(), h_size)
 
@@ -335,10 +336,11 @@ class RNNEncoder(th.nn.Module):
 
 
 class Attention(th.nn.Module):
-    def __init__(self, repr_size, activations=None):
+    def __init__(self, repr_size, activations=None, save_weights=False):
         super(Attention, self).__init__()
 
         self.repr_size = repr_size
+        self.save_weights = save_weights
 
         self.monitor_activations = (activations is not None)
         if isinstance(activations, neural.Activations):
@@ -351,13 +353,15 @@ class Attention(th.nn.Module):
         self.target = th.nn.Linear(1, repr_size)
         self.output = th.nn.Linear(repr_size, repr_size)
 
-        self.dump_index = -1
+        self.current_split = 'default'
         self.dump_file = None
 
     def __del__(self):
         self.close_dump_file()
 
     def close_dump_file(self):
+        if not hasattr(self, 'save_weights') or not self.save_weights:
+            return
         try:
             if hasattr(self, 'dump_file') and self.dump_file is not None:
                 self.dump_file.close()
@@ -365,26 +369,26 @@ class Attention(th.nn.Module):
         except IOError as e:
             print("Couldn't close attention weights file: {}".format(e))
 
-    def train(self, mode=True):
-        prev = self.training
-        super(Attention, self).train(mode)
-
-        if mode == prev:
+    def open_dump_file(self):
+        if not self.save_weights or self.dump_file is not None:
             return
-        self.close_dump_file()
-        if mode:
-            return
-
-        self.dump_index += 1
-        self.close_dump_file()
         try:
-            self.dump_file = config.open('attn_weights.{}.jsons'.format(self.dump_index), 'w')
+            self.dump_file = config.open('attn_weights.{}.jsons'.format(self.current_split), 'w')
         except IOError as e:
             print("Couldn't open attention weights file: {}".format(e))
 
-    def dump_weights(self, weights):
-        if self.dump_file is None:
+    def split(self, split):
+        if split == self.current_split:
             return
+
+        self.close_dump_file()
+        self.current_split = split
+
+    def dump_weights(self, weights):
+        if self.training or not self.save_weights:
+            return
+        if self.dump_file is None:
+            self.open_dump_file()
         weights_list = weights.tolist()
         try:
             for seq in weights_list:

@@ -122,11 +122,13 @@ def main():
                     learner.dump(outfile)
 
             train_results = evaluate.evaluate(learner, train_data, metrics=m, split_id='train',
-                                              write_data=options.output_train_data)
+                                              write_data=options.output_train_data,
+                                              pass_split=True)
             output.output_results(train_results, 'train')
 
         eval_results = evaluate.evaluate(learner, eval_data, metrics=m, split_id='eval',
-                                         write_data=options.output_eval_data)
+                                         write_data=options.output_eval_data,
+                                         pass_split=True)
         output.output_results(eval_results, 'eval')
 
 

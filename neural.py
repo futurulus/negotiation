@@ -109,11 +109,19 @@ class TorchModel():
             for k, v in predict.items()
         }, to_native(score)
 
-    def eval(self, pairs):
+    def eval(self, pairs, split='eval'):
         arrays = self.vectorizer.vectorize_all(pairs)
         self.module.eval()
+        self.module.apply(self.split(split))
         predict, score = self.transform_and_predict(arrays)
         return self.unvectorize(predict, score)
+
+    def split(self, split):
+        def apply_split(module):
+            if hasattr(module, 'split') and hasattr(module.split, '__call__'):
+                module.split(split)
+
+        return apply_split
 
 
 class Activations():
