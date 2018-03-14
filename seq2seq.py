@@ -354,7 +354,9 @@ class Attention(th.nn.Module):
         self.output = th.nn.Linear(repr_size, repr_size)
 
         self.current_split = 'default'
+
         self.dump_file = None
+        self.close_generator = None
 
     def __del__(self):
         self.close_dump_file()
@@ -363,17 +365,26 @@ class Attention(th.nn.Module):
         if not hasattr(self, 'save_weights') or not self.save_weights:
             return
         try:
-            if hasattr(self, 'dump_file') and self.dump_file is not None:
-                self.dump_file.close()
-                self.dump_file = None
+            if hasattr(self, 'close_generator') and self.close_generator is not None:
+                next(self.close_generator)
+                self.close_generator = None
         except IOError as e:
             print("Couldn't close attention weights file: {}".format(e))
+
+    def get_close_generator(self):
+        with config.open('attn_weights.{}.jsons'.format(self.current_split), 'w') as dump_file:
+            self.dump_file = dump_file
+            yield
+
+        self.dump_file = None
+        yield
 
     def open_dump_file(self):
         if not self.save_weights or self.dump_file is not None:
             return
         try:
-            self.dump_file = config.open('attn_weights.{}.jsons'.format(self.current_split), 'w')
+            self.close_generator = self.get_close_generator()
+            next(self.close_generator)
         except IOError as e:
             print("Couldn't open attention weights file: {}".format(e))
 
@@ -437,7 +448,7 @@ class Attention(th.nn.Module):
     def __getstate__(self):
         d = self.__dict__.copy()
         d['dump_file'] = None
-        d['dump_index'] = -1
+        d['current_split'] = 'default'
         return d
 
 

@@ -251,38 +251,34 @@ class SelectionVectorizer():
         self.tokens.append('<pad>')
 
         self.cache = {}
-        for count1 in range(MAX_COUNT + 1):
-            for count2 in range(MAX_COUNT + 1):
-                for count3 in range(MAX_COUNT + 1):
-                    if not (MIN_FEASIBLE <=
-                            (count1 + 1) * (count2 + 1) * (count3 + 1) <=
-                            MAX_FEASIBLE):
-                        continue
+        for count1, count2, count3 in all_possible_subcounts([MAX_COUNT, MAX_COUNT, MAX_COUNT]):
+            if not (MIN_FEASIBLE <=
+                    (count1 + 1) * (count2 + 1) * (count3 + 1) <=
+                    MAX_FEASIBLE):
+                continue
 
-                    assert self.tokens[0] == '<no_agreement>'
-                    assert self.tokens[1] == '<disagree>'
-                    assert self.tokens[2] == '<disconnect>'
-                    feasible = [[0, 0, 0], [1, 1, 1], [2, 2, 2]]
+            assert self.tokens[0] == '<no_agreement>'
+            assert self.tokens[1] == '<disagree>'
+            assert self.tokens[2] == '<disconnect>'
+            feasible = [[0, 0, 0], [1, 1, 1], [2, 2, 2]]
 
-                    for sel1 in range(count1 + 1):
-                        for sel2 in range(count2 + 1):
-                            for sel3 in range(count3 + 1):
-                                feasible.append([
-                                    self.tokens.index(f'item{i}={sel}')
-                                    for i, sel in enumerate([sel1, sel2, sel3])
-                                ])
+            for sel1, sel2, sel3 in all_possible_subcounts([count1, count2, count3]):
+                feasible.append([
+                    self.tokens.index(f'item{i}={sel}')
+                    for i, sel in enumerate([sel1, sel2, sel3])
+                ])
 
-                    num_feasible = len(feasible)
-                    while len(feasible) < MAX_FEASIBLE + 3:
-                        feasible.append([pad_idx, pad_idx, pad_idx])
-                    feasible_array = np.array(feasible)
-                    assert len(feasible_array.shape) == 2, feasible_array.shape
-                    assert feasible_array.shape[0] <= MAX_FEASIBLE + 3, feasible_array.shape
-                    assert 'int' in feasible_array.dtype.name, feasible_array.dtype
+            num_feasible = len(feasible)
+            while len(feasible) < MAX_FEASIBLE + 3:
+                feasible.append([pad_idx, pad_idx, pad_idx])
+            feasible_array = np.array(feasible)
+            assert len(feasible_array.shape) == 2, feasible_array.shape
+            assert feasible_array.shape[0] <= MAX_FEASIBLE + 3, feasible_array.shape
+            assert 'int' in feasible_array.dtype.name, feasible_array.dtype
 
-                    for j, feas in enumerate(feasible[:num_feasible]):
-                        cache_key = (count1, count2, count3) + tuple(self.tokens[t] for t in feas)
-                        self.cache[cache_key] = (j, feasible_array, num_feasible)
+            for j, feas in enumerate(feasible[:num_feasible]):
+                cache_key = (count1, count2, count3) + tuple(self.tokens[t] for t in feas)
+                self.cache[cache_key] = (j, feasible_array, num_feasible)
 
     def vocab_size(self):
         return len(self.tokens)
@@ -321,6 +317,13 @@ class SelectionVectorizer():
     def unvectorize_all(self, indices):
         return [self.unvectorize(idx_seq)
                 for idx_seq in indices]
+
+
+def all_possible_subcounts(counts):
+    for sub1 in range(counts[0] + 1):
+        for sub2 in range(counts[1] + 1):
+            for sub3 in range(counts[2] + 1):
+                yield sub1, sub2, sub3
 
 
 class SelfPlayVectorizer(NegotiationVectorizer):

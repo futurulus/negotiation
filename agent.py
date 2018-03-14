@@ -5,10 +5,224 @@ from stanza.research.rng import get_rng
 
 import neural
 import seq2seq
+import tokenizers
 from vectorizers import MAX_FEASIBLE, NUM_ITEMS, GOAL_SIZE
 from thutils import index_sequence, lrange, log_softmax, maybe_cuda as cu
 
 rng = get_rng()
+
+
+class Agent():
+    def __init__(self, models=None, verbosity=0):
+        if models is None:
+            models = []
+        self.models = models
+        self.verbosity = verbosity
+
+    def start(self):
+        pass
+
+    def new_game(self, game):
+        pass
+
+    def act(self):
+        raise NotImplementedError
+
+    def observe(self, result):
+        raise NotImplementedError
+
+    def outcome(self, outcome):
+        pass
+
+
+ITEMS = ('📕 ', '🎩 ', '⚽ ')
+NAMES = ('book', 'hat', 'ball')
+
+AGREE = +1
+DISAGREE = -1
+NO_AGREEMENT = 0
+
+
+class HumanAgent(Agent):
+    def start(self):
+        print('===Negotiation REPL===')
+        print('')
+        print('Type dialogue responses normally. Selection commands start with a slash:')
+        print('  /s 1 2 0 : select a final deal (ask for 1 book, 2 hats, 0 balls)')
+        print("  /y , /a : agree with partner's choice")
+        print("  /n , /d : indicate no agreement or disagree with partner's choice")
+        print('')
+
+    def new_game(self, game):
+        counts, your_values, _ = game
+        print('NEW GAME')
+        print('')
+        for i in range(3):
+            print(f'    {ITEMS[i] * counts[i]:8s} {NAMES[i]:4s} x{counts[i]}'
+                  f' worth {your_values[i]:d} each')
+        print('')
+        self.game = game
+        self.selection = None
+
+    def act(self):
+        while True:
+            line = input('YOU: ').lower()
+            if self.selection is not None:
+                if not line[:2] in ('/a', '/d', '/y', '/n', '/s'):
+                    print('  [partner has made proposal, choose agree (/a, /y) or '
+                          'disagree (/d, /n, /s)]')
+                    continue
+                elif line[:2] in ('/a', '/y'):
+                    return self.selection
+                elif line[:2] in ('/d', '/n'):
+                    return []
+                elif line.startswith('/s'):
+                    try:
+                        return self.parse_selection(line, self.game[0])
+                    except ValueError:
+                        continue
+                else:
+                    continue
+            elif line.startswith('/'):
+                if line[:2] == '/s':
+                    try:
+                        return self.parse_selection(line, self.game[0])
+                    except ValueError:
+                        continue
+                elif line[:2] in ('/d', '/n'):
+                    return []
+                elif line[:2] in ('/a', '/y'):
+                    print('  [no proposal to agree to]')
+                else:
+                    print('  [unknown command: {}]'.format())
+            else:
+                return ' '.join(tokenizers.basic_unigram_tokenizer(line.strip()))
+
+    def observe(self, result):
+        if isinstance(result, list):
+            self.print_selection('Your partner', result)
+            if self.selection is None:
+                self.selection = invert_proposal(result, self.game)
+                print('')
+            else:
+                return True
+        else:
+            assert isinstance(result, str)
+            print(f'THEM: {result}')
+
+        return False
+
+    def parse_selection(self, line, counts):
+        try:
+            elems = line.split()
+            selection = [int(e) for e in elems[1:4]]
+            for s, c in zip(selection, counts):
+                if s < 0:
+                    print("  [number of items can't be negative]")
+                    raise ValueError
+                elif s > c:
+                    print(f"  [selection ({s}) greater than number of items ({c})]")
+                    raise ValueError
+
+            self.print_selection('You', selection)
+            return selection
+        except (IndexError, ValueError):
+            print('  [/s must be followed by three integers (books, hats, balls)]')
+            raise ValueError
+
+    def print_selection(self, agent, result):
+        print('')
+        if result:
+            print(f'  {agent} requested:')
+            for i in range(3):
+                print(f'    {ITEMS[i] * result[i]:8s} {NAMES[i]:4s} x{result[i]}')
+        else:
+            print(f'  {agent} indicated no agreement.')
+
+    def outcome(self, outcome):
+        agreement, my_value, their_value = outcome
+        print('')
+        if agreement == DISAGREE:
+            print('  RESULT: Disagreement (0 points each).')
+        elif agreement == NO_AGREEMENT:
+            print('  RESULT: No agreement (0 points each).')
+        else:
+            print(f'  RESULT: Agreement, you got {my_value} points. (Partner got {their_value}.)')
+        print('')
+
+
+class TwoModelAgent(Agent):
+    def new_game(self, game):
+        self.game = game
+        self.dialogue = []
+        self.selection = None
+
+    def act(self):
+        resp_model, sel_model = self.models
+
+        inst = self.get_input_instance(self.game, self.dialogue)
+        if self.selection:
+            output = sel_model.predict([inst], random=True, verbosity=0)[0]
+            if self.verbosity >= 5:
+                print(f'      --OUTPUT: {repr(output)}')
+            return self.parse_selection(output, self.game[0])
+        else:
+            response = resp_model.predict([inst], random=True, verbosity=0)[0]
+            if self.verbosity >= 5:
+                print(f'      --RESPONSE: {repr(response)}')
+            if response == '<selection>':
+                output = sel_model.predict([inst], random=True, verbosity=0)[0]
+                if self.verbosity >= 5:
+                    print(f'      --OUTPUT: {repr(output)}')
+                return self.parse_selection(output, self.game[0])
+            else:
+                return response
+
+    def observe(self, result):
+        if isinstance(result, list):
+            self.dialogue.append(f'YOU: <selection>')
+            if self.selection is None:
+                self.selection = result
+            else:
+                return True
+        else:
+            assert isinstance(result, str)
+            self.dialogue.append('YOU: ' + result)
+
+        return False
+
+    def get_input_instance(self, game, dialogue):
+        pieces = [f'{game[0][0]} {game[1][0]} {game[0][1]} {game[1][1]} {game[0][2]} {game[1][2]}']
+        for entry in dialogue:
+            pieces.append(f'{entry} <eos>')
+        input = ' '.join(pieces)[:-len('<eos>')]
+        from stanza.research.instance import Instance
+        return Instance(input, '')
+
+    def parse_selection(self, line, counts):
+        if line.startswith('<'):
+            return []
+
+        import re
+        match = re.search(r'item0=(\d+) item1=(\d+) item2=(\d+)', line)
+        if not match:
+            return []
+        else:
+            return [max(0, min(c, int(s))) for c, s in zip(counts, match.groups())]
+
+    def outcome(self, outcome):
+        if self.verbosity >= 5:
+            print(f"  --GAME (TwoModelAgent's POV): {self.game}")
+
+
+def invert_proposal(response, game):
+    return [c - s for c, s in zip(game[0], response)]
+
+
+AGENTS = {
+    c.__name__: c
+    for c in [HumanAgent, TwoModelAgent]
+}
 
 
 class Negotiator(th.nn.Module):
@@ -259,9 +473,9 @@ class RLLoss(th.nn.Module):
         return (reward - mu) / sigma
 
 
-class RLAgent(th.nn.Module):
+class RLNegotiator(th.nn.Module):
     def __init__(self, negotiator, partner, vectorizer, options):
-        super(RLAgent, self).__init__()
+        super(RLNegotiator, self).__init__()
         self.negotiator = negotiator
         self.partner = partner
         self.vectorizer = vectorizer
@@ -286,22 +500,22 @@ class RLAgent(th.nn.Module):
         dialogue = []
         policy_scores = []
         for _ in range(self.max_dialogue_len):
-            agent = self.negotiator if my_turn else self.partner
+            me = self.negotiator if my_turn else self.partner
             other = self.partner if my_turn else self.negotiator
 
-            output_predict, output_score = agent.speak(self.you, self.eos)
-            (agent_resp_indices, resp_len), policy_score = self.policy(output_predict, output_score)
+            output_predict, output_score = me.speak(self.you, self.eos)
+            (me_resp_indices, resp_len), policy_score = self.policy(output_predict, output_score)
             start_with_you = th.autograd.Variable(cu(th.LongTensor([[self.you]])))
-            agent_resp_indices = th.cat([start_with_you.expand(resp_len.size()[0], 1),
-                                         agent_resp_indices], 1)
-            agent.listen(agent_resp_indices, resp_len + 1)
+            me_resp_indices = th.cat([start_with_you.expand(resp_len.size()[0], 1),
+                                      me_resp_indices], 1)
+            me.listen(me_resp_indices, resp_len + 1)
 
-            other_resp_indices = self.transform_dialogue(agent_resp_indices)
+            other_resp_indices = self.transform_dialogue(me_resp_indices)
             other.listen(other_resp_indices, resp_len + 1)
 
-            dialogue.append(((agent_resp_indices if my_turn else other_resp_indices), resp_len))
+            dialogue.append(((me_resp_indices if my_turn else other_resp_indices), resp_len))
             policy_scores.append(policy_score)
-            if self.is_selection(agent_resp_indices, resp_len):
+            if self.is_selection(me_resp_indices, resp_len):
                 break
 
             my_turn = not my_turn

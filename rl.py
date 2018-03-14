@@ -9,7 +9,7 @@ import neural
 import seq2seq
 import vectorizers
 import tokenizers
-from agent import RLAgent, Negotiator, SupervisedLoss, RLLoss
+from agent import RLNegotiator, Negotiator, SupervisedLoss, RLLoss
 
 
 parser = config.get_options_parser()
@@ -152,11 +152,11 @@ class RLLearner(NegotiationLearner):
 
     def wrap_negotiator(self, module, vectorizer):
         if self.options.batch_size != 1:
-            raise ValueError('RLAgent and StaticSelfPlayLearner currently only support a batch '
-                             'size of 1. Pass --batch_size 1 for RL/self-play evaluation.')
+            raise ValueError('RLNegotiator and StaticSelfPlayLearner currently only support a '
+                             'batch size of 1. Pass --batch_size 1 for RL/self-play evaluation.')
 
         return neural.TorchModel(
-            module=RLAgent(module, self.module_b, vectorizer, self.options),
+            module=RLNegotiator(module, self.module_b, vectorizer, self.options),
             loss=RLLoss(self.options),
             optimizer=th.optim.SGD,
             optimizer_params={'lr': self.options.learning_rate},

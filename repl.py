@@ -6,77 +6,109 @@ python repl.py --response runs/response/model.pkl \
 import random
 import pickle
 
-from stanza.research import config
+from stanza.research import config, output
+from stanza.monitoring import progress
 
-import tokenizers
+import agent
+from vectorizers import all_possible_subcounts
 
 parser = config.get_options_parser()
-parser.add_argument('--response', metavar='RESP_MODEL_FILE', default='',
-                    help='Model pickle file for the response (dialogue) model.')
-parser.add_argument('--selection', metavar='SEL_MODEL_FILE', default='',
-                    help='Model pickle file for the selection (final deal) model.')
+parser.add_argument('--agent_a', default='HumanAgent', choices=agent.AGENTS,
+                    help='Class name for agent A in dialogue simulation.')
+parser.add_argument('--agent_b', default='TwoModelAgent', choices=agent.AGENTS,
+                    help='Class name for agent B in dialogue simulation.')
+parser.add_argument('--load_a', metavar='MODEL_FILE', default=[], nargs='*',
+                    help='Model pickle file to load for agent A (two files as different arguments ='
+                         ' response.pkl selection.pkl in the case of TwoModelAgent).')
+parser.add_argument('--load_b', metavar='MODEL_FILE', default=[], nargs='*',
+                    help='Model pickle file to load for agent B (two files as different arguments ='
+                         ' response.pkl selection.pkl in the case of TwoModelAgent).')
 parser.add_argument('--contexts', metavar='CONTEXT_FILE', default='data/selfplay.txt',
                     help='Text file giving game contexts, each consisting of two lines in the '
                          'format "na va nb vb nc vc".')
+parser.add_argument('--verbosity', type=int, default=0,
+                    help='Amount of debugging output to print: >=5 = show all model outputs, '
+                         "<5 = don't.")
 
 
 def repl():
     options = config.options()
-    print('===Negotiation REPL===')
-    print('')
-    print('Type dialogue responses normally. Selection commands start with a slash:')
-    print('  /s 1 2 0 : select a final deal (ask for 1 book, 2 hats, 0 balls)')
-    print("  /y , /a : agree with partner's choice")
-    print("  /n , /d : indicate no agreement or disagree with partner's choice")
-    print('')
 
-    with open(options.response, 'rb') as infile:
-        resp_model = pickle.load(infile)
-    with open(options.selection, 'rb') as infile:
-        sel_model = pickle.load(infile)
+    models_a = []
+    models_b = []
+    for a_filename in options.load_a:
+        with open(a_filename, 'rb') as infile:
+            models_a.append(pickle.load(infile))
+    for b_filename in options.load_b:
+        with open(b_filename, 'rb') as infile:
+            models_b.append(pickle.load(infile))
+    agent_a = agent.AGENTS[options.agent_a](models_a, options.verbosity)
+    agent_b = agent.AGENTS[options.agent_b](models_b, options.verbosity)
 
-    while True:
-        game = generate_game(options.contexts)
-        print_game(game)
-        dialogue = []
-        selection = None
+    agent_a.start()
+    agent_b.start()
 
-        human_goes = (random.randint(0, 1) == 1)
-        while True:
-            turn = human_turn if human_goes else bot_turn
-            prefix = ('YOU: ' if human_goes else 'THEM: ')
-            result = turn(resp_model, sel_model, game, dialogue, selection)
-            if isinstance(result, list):
-                if human_goes:
-                    agent = 'You'
-                else:
-                    agent = 'Your partner'
-                print_selection(agent, result)
-                dialogue.append(f'{prefix}<selection>')
-                if selection is None:
-                    if human_goes:
-                        selection = result
+    games = []
+    outcomes_a = []
+    dialogues = []
+    deals_a = []
+
+    generate_games(options.contexts)
+
+    try:
+        if options.verbosity >= 1:
+            progress.start_task('Game', len(GAMES))
+        for i, game in enumerate(generate_games(options.contexts)):
+            if options.verbosity >= 1:
+                progress.progress(i)
+
+            games.append(game)
+            agent_a.new_game(game)
+            agent_b.new_game([game[0], game[2], game[1]])
+
+            dialogue = []
+            proposal_a = None
+
+            a_goes = (random.randint(0, 1) == 1)
+            while True:
+                current_agent = agent_a if a_goes else agent_b
+                other_agent = agent_b if a_goes else agent_a
+                # prefix = ('YOU: ' if human_goes else 'THEM: ')
+                response = current_agent.act()
+                other_agent.observe(response)
+                if isinstance(response, list):
+                    response = response if a_goes else agent.invert_proposal(response, game)
+                    if proposal_a is None:
+                        proposal_a = response
                     else:
-                        selection = [c - s for c, s in zip(game[0], result)]
-                        print('')
+                        break
                 else:
-                    if not human_goes:
-                        result = [c - s for c, s in zip(game[0], result)]
-                    break
-            else:
-                assert isinstance(result, str)
-                if not human_goes:
-                    print(f'THEM: {result}')
-                dialogue.append(prefix + result)
-            human_goes = not human_goes
+                    dialogue.append(('A: ' if a_goes else 'B: ') + response)
 
-        print_outcome(game, dialogue, selection, result)
+                a_goes = not a_goes
+
+            outcome_a, outcome_b = compute_outcome(game, proposal_a, response)
+            agent_a.outcome(outcome_a)
+            agent_b.outcome(outcome_b)
+            outcomes_a.append(outcome_a)
+            dialogues.append(dialogue)
+            if outcome_a[0] == agent.AGREE:
+                deals_a.append(proposal_a)
+            else:
+                deals_a.append(None)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if options.verbosity >= 1:
+            progress.end_task()
+
+    analyze_games(games, outcomes_a, dialogues, deals_a)
 
 
 GAMES = []
 
 
-def generate_game(context_filename):
+def generate_games(context_filename):
     global GAMES
     if not GAMES:
         with open('data/selfplay.txt', 'r') as infile:
@@ -89,153 +121,80 @@ def generate_game(context_filename):
             GAMES.append([[a[0], a[2], a[4]],
                           [a[1], a[3], a[5]],
                           [b[1], b[3], b[5]]])
+        random.shuffle(GAMES)
 
-    return random.choice(GAMES)
-
-
-def human_turn(resp_model, sel_model, game, dialogue, selection):
-    while True:
-        line = input('YOU: ').lower()
-        if selection is not None:
-            if not line[:2] in ('/a', '/d', '/y', '/n', '/s'):
-                print('  [partner has made proposal, choose agree (/a, /y) or '
-                      'disagree (/d, /n, /s)]')
-                continue
-            elif line[:2] in ('/a', '/y'):
-                return selection
-            elif line[:2] in ('/d', '/n'):
-                return []
-            elif line.startswith('/s'):
-                try:
-                    return parse_human_selection(line, game[0])
-                except ValueError:
-                    continue
-            else:
-                continue
-        elif line.startswith('/'):
-            if line[:2] == '/s':
-                try:
-                    return parse_human_selection(line, game[0])
-                except ValueError:
-                    continue
-            elif line[:2] in ('/d', '/n'):
-                '''
-                if len(dialogue) < 9:
-                    print('  [wait {} more turn{} before agreeing to '
-                          'disagree]'.format(9 - len(dialogue), ('s' if len(dialogue) < 8 else '')))
-                else:
-                '''
-                return []
-            elif line[:2] in ('/a', '/y'):
-                print('  [no proposal to agree to]')
-            else:
-                print('  [unknown command: {}]'.format())
-        else:
-            return ' '.join(tokenizers.basic_unigram_tokenizer(line.strip()))
+    return iter(GAMES)
 
 
-'''
-def bot_turn(resp_model, sel_model, game, dialogue, selection):
-    if selection:
-        return (random.randint(0, 1) == 1)
-    elif len(dialogue) < 6:
-        return 'give me all the books'
+def analyze_games(games, outcomes, dialogues, deals_a):
+    import numpy as np
+    results = {}
+
+    results['sim.num_games'] = len(games)
+    agreement = [int(outcome[0] == agent.AGREE) for outcome in outcomes]
+    results['sim.agreement.mean'] = np.mean(agreement)
+    results['sim.agreement.std'] = np.std(agreement)
+    results['sim.agreement.sum'] = np.sum(agreement)
+    rewards_a = [outcome[1] for outcome in outcomes]
+    results['sim.rewards_a.mean'] = np.mean(rewards_a)
+    results['sim.rewards_a.std'] = np.std(rewards_a)
+    results['sim.rewards_a.sum'] = np.sum(rewards_a)
+    rewards_a_agree = [outcome[1] for outcome in outcomes if outcome[0] == agent.AGREE]
+    results['sim.rewards_a_agree.mean'] = np.mean(rewards_a_agree)
+    results['sim.rewards_a_agree.std'] = np.std(rewards_a_agree)
+    results['sim.rewards_a_agree.sum'] = np.sum(rewards_a_agree)
+    rewards_b = [outcome[2] for outcome in outcomes]
+    results['sim.rewards_b.mean'] = np.mean(rewards_b)
+    results['sim.rewards_b.std'] = np.std(rewards_b)
+    results['sim.rewards_b.sum'] = np.sum(rewards_b)
+    rewards_b_agree = [outcome[2] for outcome in outcomes if outcome[0] == agent.AGREE]
+    results['sim.rewards_b_agree.mean'] = np.mean(rewards_b_agree)
+    results['sim.rewards_b_agree.std'] = np.std(rewards_b_agree)
+    results['sim.rewards_b_agree.sum'] = np.sum(rewards_b_agree)
+
+    pareto_optimal = [int(is_pareto_optimal(game, deal_a))
+                      for game, deal_a, outcome_a in zip(games, deals_a, outcomes)
+                      if outcome_a[0] == agent.AGREE]
+    results['sim.pareto_optimal.mean'] = np.mean(pareto_optimal)
+    results['sim.pareto_optimal.std'] = np.std(pareto_optimal)
+    results['sim.pareto_optimal.sum'] = np.sum(pareto_optimal)
+
+    output.output_results(results, 'sim')
+
+
+def is_pareto_optimal(game, deal_a):
+    '''
+    >>> is_pareto_optimal([[2, 2, 2], [3, 2, 0], [0, 3, 2]], [2, 2, 0])
+    True
+    >>> is_pareto_optimal([[2, 2, 2], [3, 2, 0], [0, 3, 2]], [0, 2, 0])
+    False
+    >>> is_pareto_optimal([[4, 1, 1], [1, 0, 6], [0, 6, 4]], [4, 0, 1])
+    True
+    >>> is_pareto_optimal([[4, 1, 1], [1, 0, 6], [0, 6, 4]], [4, 0, 0])
+    True
+    >>> is_pareto_optimal([[4, 1, 1], [1, 0, 6], [0, 6, 4]], [1, 0, 1])
+    False
+    '''
+    counts, values_a, values_b = game
+    _, reward_a, reward_b = compute_outcome(game, deal_a, deal_a)[0]
+    for alt_deal in all_possible_subcounts(game[0]):
+        _, alt_reward_a, alt_reward_b = compute_outcome(game, alt_deal, alt_deal)[0]
+        if alt_reward_a > reward_a and alt_reward_b >= reward_b:
+            return False
+        if alt_reward_a >= reward_a and alt_reward_b > reward_b:
+            return False
+    return True
+
+
+def compute_outcome(game, proposal_a, response_a):
+    if response_a != proposal_a:
+        return (agent.DISAGREE, 0, 0), (agent.DISAGREE, 0, 0)
+    elif proposal_a == []:
+        return (agent.NO_AGREEMENT, 0, 0), (agent.NO_AGREEMENT, 0, 0)
     else:
-        return [random.randint(0, c) for c in game[0]]
-'''
-
-
-def bot_turn(resp_model, sel_model, game, dialogue, selection):
-    inst = get_input_instance(game, dialogue)
-    if selection:
-        output = sel_model.predict([inst], random=True, verbosity=0)[0]
-        # print(f'      --OUTPUT: {repr(output)}')
-        return parse_bot_selection(output, game[0])
-    else:
-        response = resp_model.predict([inst], random=True, verbosity=0)[0]
-        # print(f'      --RESPONSE: {repr(response)}')
-        if response == '<selection>':
-            output = sel_model.predict([inst], random=True, verbosity=0)[0]
-            # print(f'      --OUTPUT: {repr(output)}')
-            return parse_bot_selection(output, game[0])
-        else:
-            return response
-
-
-def get_input_instance(game, dialogue):
-    pieces = [f'{game[0][0]} {game[2][0]} {game[0][1]} {game[2][1]} {game[0][2]} {game[2][2]}']
-    for entry in dialogue:
-        pieces.append(f'{entry} <eos>')
-    input = ' '.join(pieces)[:-len('<eos>')]
-    from stanza.research.instance import Instance
-    return Instance(input, '')
-
-
-ITEMS = ('📕 ', '🎩 ', '⚽ ')
-NAMES = ('book', 'hat', 'ball')
-
-
-def print_game(game):
-    counts, your_values, _ = game
-    print('NEW GAME')
-    print('')
-    for i in range(3):
-        print(f'    {ITEMS[i] * counts[i]:8s} {NAMES[i]:4s} x{counts[i]}'
-              f' worth {your_values[i]:d} each')
-    print('')
-
-
-def print_selection(agent, result):
-    print('')
-    if result:
-        print(f'  {agent} requested:')
-        for i in range(3):
-            print(f'    {ITEMS[i] * result[i]:8s} {NAMES[i]:4s} x{result[i]}')
-    else:
-        print(f'  {agent} indicated no agreement.')
-
-
-def print_outcome(game, dialogue, selection, result):
-    print('')
-    if result != selection:
-        print('  RESULT: Disagreement (0 points each).')
-    elif selection == []:
-        print('  RESULT: No agreement (0 points each).')
-    else:
-        your_value = sum([s * v for s, v in zip(selection, game[1])])
-        their_value = sum([(c - s) * v for c, s, v in zip(game[0], selection, game[2])])
-        print(f'  RESULT: Agreement, you got {your_value} points. (Partner got {their_value}.)')
-        # print(f'  --GAME: {game}')
-    print('')
-
-
-def parse_human_selection(line, counts):
-    try:
-        elems = line.split()
-        selection = [int(e) for e in elems[1:4]]
-        for s, c in zip(selection, counts):
-            if s < 0:
-                print("  [number of items can't be negative]")
-                raise ValueError
-            elif s > c:
-                print(f"  [selection ({s}) greater than number of items ({c})]")
-                raise ValueError
-        return selection
-    except (IndexError, ValueError):
-        print('  [/s must be followed by three integers (books, hats, balls)]')
-        raise ValueError
-
-
-def parse_bot_selection(line, counts):
-    if line.startswith('<'):
-        return []
-
-    import re
-    match = re.search(r'item0=(\d+) item1=(\d+) item2=(\d+)', line)
-    if not match:
-        return []
-    else:
-        return [max(0, min(c, int(s))) for c, s in zip(counts, match.groups())]
+        value_a = sum([s * v for s, v in zip(proposal_a, game[1])])
+        value_b = sum([(c - s) * v for c, s, v in zip(game[0], proposal_a, game[2])])
+        return (agent.AGREE, value_a, value_b), (agent.AGREE, value_b, value_a)
 
 
 if __name__ == '__main__':
