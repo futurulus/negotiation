@@ -9,3 +9,5 @@ tensorflow
 !cocoa-negotiation/data
 __pycache__
 *.pyc
+.coverage
+coverage_report/

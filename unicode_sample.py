@@ -9,7 +9,7 @@ from stanza.research import config
 from stanza.research.instance import Instance
 
 import thutils
-from simple import SimpleSeq2SeqLearner
+from seq2seq import SimpleSeq2SeqLearner
 
 
 def sample_unicode(model_pkl_file, device):
