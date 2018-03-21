@@ -62,14 +62,16 @@ def repl():
         with open(a_filename, 'rb') as infile:
             with thutils.device_context(device):
                 models_a.append(pickle.load(infile))
-                assert models_a[-1].options.device == device, models_a[-1].options.device
+                assert norm_device(models_a[-1].options.device) == norm_device(device), \
+                    models_a[-1].options.device
     for b_filename, device in zip(options.load_b, options.device_b):
         if options.verbosity >= 2:
             print(f'Loading {b_filename}...')
         with open(b_filename, 'rb') as infile:
             with thutils.device_context(device):
                 models_b.append(pickle.load(infile))
-                assert models_b[-1].options.device == device, models_b[-1].options.device
+                assert norm_device(models_b[-1].options.device) == norm_device(device), \
+                    models_b[-1].options.device
     agent_a = agent.AGENTS[options.agent_a](options, models_a)
     agent_b = agent.AGENTS[options.agent_b](options, models_b)
 
@@ -216,6 +218,17 @@ def is_pareto_optimal(game, deal_a):
         if alt_reward_a >= reward_a and alt_reward_b > reward_b:
             return False
     return True
+
+
+def norm_device(device):
+    if device is None:
+        device = ''
+    device = device.lower()
+    if device.startswith('cuda'):
+        device = 'gpu' + device[4:]
+    if device in ('cpu', 'none'):
+        device = ''
+    return device
 
 
 if __name__ == '__main__':
