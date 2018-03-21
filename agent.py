@@ -1,24 +1,33 @@
 import torch as th
 import numpy as np
 
+from stanza.research import config
 from stanza.research.rng import get_rng
 
 import neural
 import seq2seq
 import tokenizers
-from vectorizers import MAX_FEASIBLE, NUM_ITEMS, GOAL_SIZE
+from vectorizers import MAX_FEASIBLE, NUM_ITEMS, GOAL_SIZE, all_possible_subcounts
 import thutils
 from thutils import index_sequence, lrange, log_softmax, maybe_cuda as cu
 
 rng = get_rng()
 
+parser = config.get_options_parser()
+parser.add_argument('--max_dialogue_len', type=int, default=20,
+                    help='Maximum number of turns in a reinforcement learning dialogue rollout.')
+parser.add_argument('--goal_candidates', default=3, type=int,
+                    help='Number of candidates to sample for goal-directed decoding.')
+parser.add_argument('--goal_rollouts', default=3, type=int,
+                    help='Number of rollouts per candidate for goal-directed decoding.')
+
 
 class Agent():
-    def __init__(self, models=None, verbosity=0):
+    def __init__(self, options, models=None):
         if models is None:
             models = []
         self.models = models
-        self.verbosity = verbosity
+        self.options = options
 
     def start(self):
         pass
@@ -26,8 +35,11 @@ class Agent():
     def new_game(self, game):
         pass
 
-    def act(self):
+    def act(self, goal_directed=False):
         raise NotImplementedError
+
+    def commit(self, action):
+        pass
 
     def observe(self, result):
         raise NotImplementedError
@@ -65,7 +77,7 @@ class HumanAgent(Agent):
         self.game = game
         self.selection = None
 
-    def act(self):
+    def act(self, goal_directed='ignored'):
         while True:
             line = input('YOU: ').lower()
             if self.selection is not None:
@@ -158,60 +170,152 @@ class TwoModelAgent(Agent):
             self.agent_id = random_agent_name()
         self.game = game
         self.dialogue = []
-        self.selection = None
+        self.sel_singleton = [None]
 
-    def act(self):
+    def sample_action(self):
+        return self.act(dialogue=self.dialogue)
+
+    def dialogue_rollout(self, candidate):
+        rollout = list(self.dialogue)
+        sel_singleton = list(self.sel_singleton)
+        self.commit(candidate)
+        invert = True
+        while True:
+            action = self.act(goal_directed=False, invert=invert,
+                              dialogue=rollout, sel_singleton=sel_singleton)
+            if invert:
+                if self.observe(action, dialogue=rollout, sel_singleton=sel_singleton):
+                    break
+            else:
+                if sel_singleton[0] is not None:
+                    end = True
+                self.commit(action, dialogue=rollout, sel_singleton=sel_singleton)
+                if end:
+                    break
+        return compute_outcome(self.game, sel_singleton[0], action)
+
+    def act(self, goal_directed=False, invert=False, dialogue=None, sel_singleton=None):
+        if goal_directed:
+            return self.goal_directed_action(self.options.goal_candidates,
+                                             self.options.goal_rollouts)
+
+        if dialogue is None:
+            dialogue = self.dialogue
+            indent = ''
+            inner_verbosity = 0
+        else:
+            indent = '    '
+            inner_verbosity = -1
+        if sel_singleton is None:
+            sel_singleton = self.sel_singleton
         resp_model, sel_model = self.models
 
-        inst = self.get_input_instance(self.game, self.dialogue)
-        if self.selection is not None:
+        inst = self.get_input_instance(self.game, dialogue, invert=invert)
+        if sel_singleton[0] is not None:
             with thutils.device_context(sel_model.options.device):
                 output = sel_model.predict([inst], random=True, verbosity=0)[0]
-            if self.verbosity >= 5:
-                print(f'      --OUTPUT [{self.agent_id}]: {repr(output)}')
+            if self.options.verbosity + inner_verbosity >= 5:
+                print(f'      {indent}--OUTPUT [{self.agent_id}]: {repr(output)}')
             return self.parse_selection(output, self.game[0])
         else:
-            with thutils.device_context(resp_model.options.device):
-                response = resp_model.predict([inst], random=True, verbosity=0)[0]
-            if self.verbosity >= 5:
-                print(f'      --RESPONSE [{self.agent_id}]: {repr(response)}')
-            self.dialogue.append('YOU: ' + response)
+            if len(dialogue) >= self.options.max_dialogue_len:
+                response = '<selection>'
+            else:
+                with thutils.device_context(resp_model.options.device):
+                    response = resp_model.predict([inst], random=True, verbosity=0)[0]
+            if self.options.verbosity + inner_verbosity >= 5:
+                print(f'      {indent}--RESPONSE [{self.agent_id}]: {repr(response)}')
             if response == '<selection>':
-                inst = self.get_input_instance(self.game, self.dialogue)
+                inst = self.get_input_instance(self.game, dialogue, invert=invert)
                 with thutils.device_context(sel_model.options.device):
                     output = sel_model.predict([inst], random=True, verbosity=0)[0]
-                if self.verbosity >= 5:
-                    print(f'      --OUTPUT [{self.agent_id}]: {repr(output)}')
-                self.selection = self.parse_selection(output, self.game[0])
-                return self.selection
+                if self.options.verbosity + inner_verbosity >= 5:
+                    print(f'      {indent}--OUTPUT [{self.agent_id}]: {repr(output)}')
+                return self.parse_selection(output, self.game[0])
             else:
                 return response
 
-    def observe(self, result):
+    def commit(self, action, dialogue=None, sel_singleton=None):
+        if dialogue is None:
+            dialogue = self.dialogue
+        if sel_singleton is None:
+            sel_singleton = self.sel_singleton
+
+        if isinstance(action, list):
+            dialogue.append('YOU: <selection>')
+            if sel_singleton[0] is not None:
+                sel_singleton[0] = action
+        else:
+            dialogue.append(f'YOU: {action}')
+
+    def observe(self, result, dialogue=None, sel_singleton=None):
+        if dialogue is None:
+            dialogue = self.dialogue
+        if sel_singleton is None:
+            sel_singleton = self.sel_singleton
+
         if isinstance(result, list):
-            self.dialogue.append(f'THEM: <selection>')
-            if self.selection is None:
-                self.selection = result
+            dialogue.append(f'THEM: <selection>')
+            if sel_singleton[0] is None:
+                sel_singleton[0] = result
             else:
                 return True
         else:
             assert isinstance(result, str)
-            self.dialogue.append('THEM: ' + result)
+            dialogue.append('THEM: ' + result)
 
         return False
 
-    def get_input_instance(self, game, dialogue):
-        pieces = [f'{game[0][0]} {game[1][0]} {game[0][1]} {game[1][1]} {game[0][2]} {game[1][2]}']
+    def get_input_instance(self, game, dialogue, invert=False):
+        if invert:
+            rewards = self.infer_their_rewards(game, dialogue)
+        else:
+            rewards = game[1]
+        pieces = [f'{game[0][0]} {rewards[0]} {game[0][1]} {rewards[1]} {game[0][2]} {rewards[2]}']
         for entry in dialogue:
+            if invert:
+                entry = entry.replace('YOU:', 'XYOU:')
+                entry = entry.replace('THEM:', 'YOU:')
+                entry = entry.replace('XYOU:', 'THEM:')
             pieces.append(f'{entry} <eos>')
         input = ' '.join(pieces)
         if dialogue:
             input = input[:-len(' <eos>')]
         from stanza.research.instance import Instance
         result = Instance(input, '')
-        if self.verbosity >= 6:
+        if self.options.verbosity >= 6:
             print(result.__dict__)
         return result
+
+    def goal_directed_action(self, num_candidates, num_rollouts):
+        candidates = [self.sample_action() for _ in range(num_candidates)]
+        if self.options.verbosity >= 5:
+            for candidate in candidates:
+                print(f'        --CANDIDATE [{self.agent_id}]: {repr(candidate)}')
+
+        best_candidates = []
+        best_ave_reward = 0.0
+        for candidate in candidates:
+            outcomes = [self.dialogue_rollout(candidate) for _ in range(num_rollouts)]
+            ave_reward = np.mean([our_outcome[1] for our_outcome, _ in outcomes])
+            if self.options.verbosity >= 5:
+                print(f'        --AVE_REWARD [{self.agent_id}]: {ave_reward} <= '
+                      f'{repr(candidate)}')
+            if ave_reward > best_ave_reward:
+                best_candidates = [candidate]
+                best_ave_reward = ave_reward
+            else:
+                best_candidates.append(candidate)
+        choice = best_candidates[rng.randint(len(best_candidates))]
+        if self.options.verbosity >= 5:
+            print(f'      --CHOICE [{self.agent_id}]: {repr(choice)}')
+        return choice
+
+    def infer_their_rewards(self, game, dialogue):
+        # Pick something feasible at random.
+        possible = [r for r in all_possible_rewards(game[0])
+                    if not has_double_zeros(r, game[1])]
+        return possible[rng.randint(len(possible))]
 
     def parse_selection(self, line, counts):
         if line.startswith('<'):
@@ -225,7 +329,7 @@ class TwoModelAgent(Agent):
             return [max(0, min(c, int(s))) for c, s in zip(counts, match.groups())]
 
     def outcome(self, outcome):
-        if self.verbosity >= 5:
+        if self.options.verbosity >= 5:
             print(f"  --GAME [{self.agent_id}]: {self.game}")
 
 
@@ -233,11 +337,30 @@ def invert_proposal(response, game):
     return [c - s for c, s in zip(game[0], response)]
 
 
+def has_double_zeros(their_rewards, our_rewards):
+    assert len(their_rewards) == len(our_rewards) == 3, (their_rewards, our_rewards)
+    for t, o in zip(their_rewards, our_rewards):
+        if t == 0 == o:
+            return True
+    return False
+
+
+def compute_outcome(game, proposal_a, response_a):
+    if response_a != proposal_a:
+        return (DISAGREE, 0, 0), (DISAGREE, 0, 0)
+    elif proposal_a == []:
+        return (NO_AGREEMENT, 0, 0), (NO_AGREEMENT, 0, 0)
+    else:
+        value_a = sum([s * v for s, v in zip(proposal_a, game[1])])
+        value_b = sum([(c - s) * v for c, s, v in zip(game[0], proposal_a, game[2])])
+        return (AGREE, value_a, value_b), (AGREE, value_b, value_a)
+
+
 def random_agent_name():
     CONSONANTS = 'bcdfghjklmnpqrstvwxyz'
     VOWELS = 'aeoiu'
-    return (CONSONANTS[rng.randint(len(CONSONANTS))] + 
-            VOWELS[rng.randint(len(VOWELS))] + 
+    return (CONSONANTS[rng.randint(len(CONSONANTS))] +
+            VOWELS[rng.randint(len(VOWELS))] +
             CONSONANTS[rng.randint(len(CONSONANTS))]).title()
 
 
@@ -245,6 +368,20 @@ AGENTS = {
     c.__name__: c
     for c in [HumanAgent, TwoModelAgent]
 }
+
+
+REWARDS_CACHE = {}
+
+
+def all_possible_rewards(counts):
+    counts = tuple(counts)
+    if counts not in REWARDS_CACHE:
+        possible = []
+        for r1, r2, r3 in all_possible_subcounts([10, 10, 10]):
+            if r1 * counts[0] + r2 * counts[1] + r3 * counts[2] == 10:
+                possible.append((r1, r2, r3))
+        REWARDS_CACHE[counts] = possible
+    return REWARDS_CACHE[counts]
 
 
 class Negotiator(th.nn.Module):

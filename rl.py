@@ -20,8 +20,6 @@ parser.add_argument('--load_init_a', default='',
 parser.add_argument('--load_init_b', default='',
                     help='Pretrained model file to load for initializing module B in '
                          'reinforcement learning.')
-parser.add_argument('--max_dialogue_len', type=int, default=20,
-                    help='Maximum number of turns in a reinforcement learning dialogue rollout.')
 parser.add_argument('--selection_alpha', type=float, default=0.5,
                     help='Relative weight of the selection compared to the responses (which '
                          'always get weight 1) in the supervised loss function.')

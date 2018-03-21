@@ -35,6 +35,12 @@ parser.add_argument('--load_a', metavar='MODEL_FILE', default=[], nargs='*',
 parser.add_argument('--load_b', metavar='MODEL_FILE', default=[], nargs='*',
                     help='Model pickle file to load for agent B (two files as different arguments ='
                          ' response.pkl selection.pkl in the case of TwoModelAgent).')
+parser.add_argument('--goal_directed_a', type=config.boolean, default=False,
+                    help='If `True`, use goal-directed decoding (maximum reward over rollouts) '
+                         'in model A.')
+parser.add_argument('--goal_directed_b', type=config.boolean, default=False,
+                    help='If `True`, use goal-directed decoding (maximum reward over rollouts) '
+                         'in model B.')
 parser.add_argument('--contexts', metavar='CONTEXT_FILE', default='data/selfplay.txt',
                     help='Text file giving game contexts, each consisting of two lines in the '
                          'format "na va nb vb nc vc".')
@@ -64,8 +70,8 @@ def repl():
             with thutils.device_context(device):
                 models_b.append(pickle.load(infile))
                 assert models_b[-1].options.device == device, models_b[-1].options.device
-    agent_a = agent.AGENTS[options.agent_a](models_a, options.verbosity)
-    agent_b = agent.AGENTS[options.agent_b](models_b, options.verbosity)
+    agent_a = agent.AGENTS[options.agent_a](options, models_a)
+    agent_b = agent.AGENTS[options.agent_b](options, models_b)
 
     agent_a.start()
     agent_b.start()
@@ -95,8 +101,9 @@ def repl():
             while True:
                 current_agent = agent_a if a_goes else agent_b
                 other_agent = agent_b if a_goes else agent_a
-                # prefix = ('YOU: ' if human_goes else 'THEM: ')
-                response = current_agent.act()
+                goal_dir = options.goal_directed_a if a_goes else options.goal_directed_b
+                response = current_agent.act(goal_directed=goal_dir)
+                current_agent.commit(response)
                 other_agent.observe(response)
                 if isinstance(response, list):
                     response = response if a_goes else agent.invert_proposal(response, game)
@@ -109,7 +116,7 @@ def repl():
 
                 a_goes = not a_goes
 
-            outcome_a, outcome_b = compute_outcome(game, proposal_a, response)
+            outcome_a, outcome_b = agent.compute_outcome(game, proposal_a, response)
             agent_a.outcome(outcome_a)
             agent_b.outcome(outcome_b)
             outcomes_a.append(outcome_a)
@@ -133,12 +140,15 @@ GAMES = []
 def generate_games(context_filename):
     global GAMES
     if not GAMES:
-        with open('data/selfplay.txt', 'r') as infile:
+        with open(context_filename, 'r') as infile:
             lines = [[int(e) for e in line.split()]
                      for line in infile
                      if line.strip()]
         for i in range(0, len(lines), 2):
-            a, b = lines[i:i+2]
+            pair = lines[i:i+2]
+            if len(pair) != 2:
+                continue
+            a, b = pair
             assert [a[0], a[2], a[4]] == [b[0], b[2], b[4]], (a, b)
             GAMES.append([[a[0], a[2], a[4]],
                           [a[1], a[3], a[5]],
@@ -198,25 +208,14 @@ def is_pareto_optimal(game, deal_a):
     False
     '''
     counts, values_a, values_b = game
-    _, reward_a, reward_b = compute_outcome(game, deal_a, deal_a)[0]
+    _, reward_a, reward_b = agent.compute_outcome(game, deal_a, deal_a)[0]
     for alt_deal in all_possible_subcounts(game[0]):
-        _, alt_reward_a, alt_reward_b = compute_outcome(game, alt_deal, alt_deal)[0]
+        _, alt_reward_a, alt_reward_b = agent.compute_outcome(game, alt_deal, alt_deal)[0]
         if alt_reward_a > reward_a and alt_reward_b >= reward_b:
             return False
         if alt_reward_a >= reward_a and alt_reward_b > reward_b:
             return False
     return True
-
-
-def compute_outcome(game, proposal_a, response_a):
-    if response_a != proposal_a:
-        return (agent.DISAGREE, 0, 0), (agent.DISAGREE, 0, 0)
-    elif proposal_a == []:
-        return (agent.NO_AGREEMENT, 0, 0), (agent.NO_AGREEMENT, 0, 0)
-    else:
-        value_a = sum([s * v for s, v in zip(proposal_a, game[1])])
-        value_b = sum([(c - s) * v for c, s, v in zip(game[0], proposal_a, game[2])])
-        return (agent.AGREE, value_a, value_b), (agent.AGREE, value_b, value_a)
 
 
 if __name__ == '__main__':
