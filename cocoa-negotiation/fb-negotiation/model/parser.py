@@ -171,10 +171,10 @@ class Parser(BaseParser):
                 elif count in self.neg_words:
                     count = 0
 
-        count = min(count, total)
         if count is None:
             return total, True
         else:
+            count = min(count, total)
             return count, False
 
     def has_item(self, utterance):

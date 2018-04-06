@@ -333,6 +333,9 @@ class TwoModelAgent(Agent):
             print(f"  --GAME [{self.agent_id}]: {self.game}")
 
 
+from baselines import RuleBasedAgent  # NOQA: prevent cyclic import
+
+
 def invert_proposal(response, game):
     return [c - s for c, s in zip(game[0], response)]
 
@@ -366,7 +369,7 @@ def random_agent_name():
 
 AGENTS = {
     c.__name__: c
-    for c in [HumanAgent, TwoModelAgent]
+    for c in [HumanAgent, TwoModelAgent, RuleBasedAgent]
 }
 
 
