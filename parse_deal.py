@@ -34,15 +34,25 @@ def dump_responses(mode, input, dialogue, output, partner_input, response_file):
 
     start = -1
     while True:
-        try:
-            start = start + 1 + dialogue[start + 1:].index('YOU:')
-        except ValueError:
+        you_start = next_or_end(dialogue, start, 'YOU:')
+
+        if mode == '_bothsides':
+            them_start = next_or_end(dialogue, start, 'THEM:')
+            start = min(you_start, them_start)
+        else:
+            start = you_start
+
+        if start == len(dialogue):
             return
 
-        try:
-            end = start + 1 + dialogue[start + 1:].index('THEM:')
-        except ValueError:
-            end = len(dialogue)
+        you_end = next_or_end(dialogue, start, 'THEM:')
+
+        if mode == '_bothsides':
+            them_end = next_or_end(dialogue, start, 'YOU:')
+            end = min(you_end, them_end)
+        else:
+            end = you_end
+
         if dialogue[end - 1] == '<selection>':
             end += 1
 
@@ -52,6 +62,15 @@ def dump_responses(mode, input, dialogue, output, partner_input, response_file):
             'output': ' '.join(dialogue[start + 1:end - 1])
         }, response_file)
         response_file.write('\n')
+
+
+def next_or_end(seq, start, target):
+    try:
+        increment = seq[start + 1:].index(target)
+    except ValueError:
+        return len(seq)
+    else:
+        return start + 1 + increment
 
 
 def dump_selection(mode, input, dialogue, output, partner_input, selection_file):
@@ -99,6 +118,6 @@ def dump_partner(mode, input, dialogue, output, partner_input, partner_file):
 
 
 if __name__ == '__main__':
-    for mode_ in '', '_repro':
+    for mode_ in '', '_repro', '_bothsides':
         for split_ in 'train', 'val', 'test':
             parse_deal(mode_, split_)
