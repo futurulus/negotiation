@@ -4,10 +4,20 @@ import base64
 from stanza.research import config, learner
 from stanza.monitoring import progress
 
-from systems import get_system
-from cocoa.core.schema import Schema
-from cocoa.core.event import Event
-from core.scenario import Scenario
+try:
+    from systems import get_system
+    from cocoa.core.schema import Schema
+    from cocoa.core.event import Event
+    from core.scenario import Scenario
+except ImportError:
+    import warnings
+    warnings.warn('Could not import Cocoa; set '
+                  'PYTHONPATH=.:cocoa-negotiation/fb-negotiation:cocoa-negotiation '
+                  'to enable RuleBasedAgent.')
+    get_system = ImportError()
+    Schema = ImportError()
+    Event = ImportError()
+    Scenario = ImportError()
 
 import agent
 
