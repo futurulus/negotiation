@@ -63,7 +63,7 @@ def repl():
             with thutils.device_context(device):
                 models_a.append(pickle.load(infile))
                 assert norm_device(models_a[-1].options.device) == norm_device(device), \
-                    models_a[-1].options.device
+                    (a_filename, models_a[-1].options.device)
     for b_filename, device in zip(options.load_b, options.device_b):
         if options.verbosity >= 2:
             print(f'Loading {b_filename}...')
@@ -71,7 +71,7 @@ def repl():
             with thutils.device_context(device):
                 models_b.append(pickle.load(infile))
                 assert norm_device(models_b[-1].options.device) == norm_device(device), \
-                    models_b[-1].options.device
+                    (b_filename, models_b[-1].options.device)
     agent_a = agent.AGENTS[options.agent_a](options, models_a)
     agent_b = agent.AGENTS[options.agent_b](options, models_b)
 
@@ -91,6 +91,8 @@ def repl():
         for i, game in enumerate(generate_games(options.contexts)):
             if options.verbosity >= 1:
                 progress.progress(i)
+            if options.verbosity >= 3:
+                print('[Game {}]'.format(i))
 
             games.append(game)
             agent_a.new_game(game)
@@ -166,34 +168,35 @@ def analyze_games(games, outcomes, dialogues, deals_a):
 
     results['sim.num_games'] = len(games)
     agreement = [int(outcome[0] == agent.AGREE) for outcome in outcomes]
-    results['sim.agreement.mean'] = np.mean(agreement)
-    results['sim.agreement.std'] = np.std(agreement)
-    results['sim.agreement.sum'] = np.sum(agreement)
+    results['sim.agreement.mean'] = float(np.mean(agreement))
+    results['sim.agreement.std'] = float(np.std(agreement))
+    results['sim.agreement.sum'] = float(np.sum(agreement))
     rewards_a = [outcome[1] for outcome in outcomes]
-    results['sim.rewards_a.mean'] = np.mean(rewards_a)
-    results['sim.rewards_a.std'] = np.std(rewards_a)
-    results['sim.rewards_a.sum'] = np.sum(rewards_a)
+    results['sim.rewards_a.mean'] = float(np.mean(rewards_a))
+    results['sim.rewards_a.std'] = float(np.std(rewards_a))
+    results['sim.rewards_a.sum'] = float(np.sum(rewards_a))
     rewards_a_agree = [outcome[1] for outcome in outcomes if outcome[0] == agent.AGREE]
-    results['sim.rewards_a_agree.mean'] = np.mean(rewards_a_agree)
-    results['sim.rewards_a_agree.std'] = np.std(rewards_a_agree)
-    results['sim.rewards_a_agree.sum'] = np.sum(rewards_a_agree)
+    results['sim.rewards_a_agree.mean'] = float(np.mean(rewards_a_agree))
+    results['sim.rewards_a_agree.std'] = float(np.std(rewards_a_agree))
+    results['sim.rewards_a_agree.sum'] = float(np.sum(rewards_a_agree))
     rewards_b = [outcome[2] for outcome in outcomes]
-    results['sim.rewards_b.mean'] = np.mean(rewards_b)
-    results['sim.rewards_b.std'] = np.std(rewards_b)
-    results['sim.rewards_b.sum'] = np.sum(rewards_b)
+    results['sim.rewards_b.mean'] = float(np.mean(rewards_b))
+    results['sim.rewards_b.std'] = float(np.std(rewards_b))
+    results['sim.rewards_b.sum'] = float(np.sum(rewards_b))
     rewards_b_agree = [outcome[2] for outcome in outcomes if outcome[0] == agent.AGREE]
-    results['sim.rewards_b_agree.mean'] = np.mean(rewards_b_agree)
-    results['sim.rewards_b_agree.std'] = np.std(rewards_b_agree)
-    results['sim.rewards_b_agree.sum'] = np.sum(rewards_b_agree)
+    results['sim.rewards_b_agree.mean'] = float(np.mean(rewards_b_agree))
+    results['sim.rewards_b_agree.std'] = float(np.std(rewards_b_agree))
+    results['sim.rewards_b_agree.sum'] = float(np.sum(rewards_b_agree))
 
     pareto_optimal = [int(is_pareto_optimal(game, deal_a))
                       for game, deal_a, outcome_a in zip(games, deals_a, outcomes)
                       if outcome_a[0] == agent.AGREE]
-    results['sim.pareto_optimal.mean'] = np.mean(pareto_optimal)
-    results['sim.pareto_optimal.std'] = np.std(pareto_optimal)
-    results['sim.pareto_optimal.sum'] = np.sum(pareto_optimal)
+    results['sim.pareto_optimal.mean'] = float(np.mean(pareto_optimal))
+    results['sim.pareto_optimal.std'] = float(np.std(pareto_optimal))
+    results['sim.pareto_optimal.sum'] = float(np.sum(pareto_optimal))
 
     output.output_results(results, 'sim')
+    config.dump_pretty(results, 'results.sim.json')
 
 
 def is_pareto_optimal(game, deal_a):
