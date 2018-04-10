@@ -1,8 +1,10 @@
 import torch as th
 import numpy as np
+from scipy.misc import logsumexp
 
 from stanza.research import config
 from stanza.research.rng import get_rng
+from stanza.research.instance import Instance
 
 import neural
 import seq2seq
@@ -212,7 +214,7 @@ class TwoModelAgent(Agent):
             inner_verbosity = -1
         if sel_singleton is None:
             sel_singleton = self.sel_singleton
-        resp_model, sel_model = self.models
+        resp_model, sel_model = self.models[:2]
 
         if sel_singleton[0] is not None:
             inst = self.get_input_instance(self.game, dialogue, invert=invert)
@@ -274,7 +276,7 @@ class TwoModelAgent(Agent):
 
     def get_input_instance(self, game, dialogue, invert=False):
         if invert:
-            rewards = self.infer_their_rewards(game, dialogue)
+            rewards = self.infer_their_rewards(game, self.dialogue)
         else:
             rewards = game[1]
         pieces = [f'{game[0][0]} {rewards[0]} {game[0][1]} {rewards[1]} {game[0][2]} {rewards[2]}']
@@ -287,7 +289,6 @@ class TwoModelAgent(Agent):
         input = ' '.join(pieces)
         if dialogue:
             input = input[:-len(' <eos>')]
-        from stanza.research.instance import Instance
         result = Instance(input, '')
         if self.options.verbosity >= 6:
             print(result.__dict__)
@@ -340,6 +341,32 @@ class TwoModelAgent(Agent):
             print(f"  --GAME [{self.agent_id}]: {self.game}")
 
 
+class RSAAgent(TwoModelAgent):
+    def infer_their_rewards(self, game, dialogue):
+        assert len(self.models) >= 3, \
+            'Not enough models for RSA agent (need 3, got {})'.format(len(self.models))
+        # Use model to sample possible other rewards
+        inst = self.get_input_instance(game, dialogue)
+        possible = [r for r in all_possible_rewards(game[0])
+                    if not has_double_zeros(r, game[1])]
+        score_insts = [self.fill_score_instance(inst, r, game[0])
+                       for r in possible]
+        scores = self.models[2].score(score_insts)
+        probs = np.exp(np.array(scores) - logsumexp(scores))
+        if self.options.verbosity >= 6:
+            print([i.output for i in score_insts])
+            print(scores)
+            print(probs)
+        return possible[rng.choice(np.arange(len(possible)),
+                                   p=probs)]
+
+    def fill_score_instance(self, inst, rewards, counts):
+        inst_dict = inst.__dict__.copy()
+        inst_dict['output'] = \
+            f'{counts[0]} {rewards[0]} {counts[1]} {rewards[1]} {counts[2]} {rewards[2]}'
+        return Instance(**inst_dict)
+
+
 from baselines import RuleBasedAgent  # NOQA: prevent cyclic import
 
 
@@ -376,7 +403,7 @@ def random_agent_name():
 
 AGENTS = {
     c.__name__: c
-    for c in [HumanAgent, TwoModelAgent, RuleBasedAgent]
+    for c in [HumanAgent, TwoModelAgent, RSAAgent, RuleBasedAgent]
 }
 
 
