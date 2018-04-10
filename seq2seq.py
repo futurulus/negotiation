@@ -558,6 +558,15 @@ class RNNDecoder(th.nn.Module):
              sample_scores, sample_outputs) = self.sampler(enc_state, extra_inputs=extra_inputs,
                                                            extra_delimiter=extra_delimiter)
 
+            '''
+            if not hasattr(neural.TorchModel, 'debug'):
+                if not hasattr(neural.TorchModel, 'debug_counts'):
+                    from collections import Counter
+                    neural.TorchModel.debug_counts = Counter()
+                print('  <COUNTS>')
+                neural.TorchModel.debug_counts.update(sample[:, 0, 1].data.tolist())
+            '''
+
         if extra_inputs is None:
             extra_inputs = []
         else:
@@ -674,7 +683,6 @@ class BeamPredictor(th.nn.Module):
             word_scores, (dec_out, state) = self.decode_fn(unravel(last_tokens),
                                                            tuple(unravel(c) for c in state),
                                                            extra_inputs=extra_inputs)
-            # import pdb; pdb.set_trace()
             word_scores = ravel(word_scores[:, 0, :])
             state = tuple(ravel(c) for c in state)
             states.append(state)
@@ -743,6 +751,14 @@ class BeamPredictor(th.nn.Module):
         return new_beam, new_beam_lengths, new_beam_scores
 
 
+def output_debug_probs(vec):
+    for i, (w, cum_prob) in enumerate(zip(vec.tokens,
+                                          neural.TorchModel.debug_probs.data.tolist())):
+        actual_count = neural.TorchModel.debug_counts[i]
+        if abs(actual_count - cum_prob) > 0.5:
+            print('{}: {:.4f} [{}]'.format(w, cum_prob, actual_count))
+
+
 class Sampler(BeamPredictor):
     def __init__(self, decode_fn, delimiters, num_samples=1, max_len=None):
         super(Sampler, self).__init__(decode_fn, delimiters=delimiters, max_len=max_len,
@@ -759,6 +775,14 @@ class Sampler(BeamPredictor):
             '%s != %s' % (beam_scores.size(), (batch_size, beam_size))
         assert beam_lengths.size() == (batch_size, 1), \
             '%s != %s' % (beam_lengths.size(), (batch_size, beam_size))
+
+        '''
+        if not hasattr(neural.TorchModel, 'debug') and length == 1:
+            if not hasattr(neural.TorchModel, 'debug_probs'):
+                neural.TorchModel.debug_probs = cu(th.zeros(vocab_size))
+            print('  <PROBS>')
+            neural.TorchModel.debug_probs += th.exp(word_scores.data)[:, 0, :].sum(dim=0)
+        '''
 
         # Sample new words
         def ravel(x):
