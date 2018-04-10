@@ -50,6 +50,17 @@ def whitespace_tokenizer(s, lower=False):
     return s.split()
 
 
+def deal_tag_tokenizer(s, lower=False):
+    if lower:
+        s = s.lower()
+    tokens = s.split()
+    tags = ['C0=', 'V0=', 'C1=', 'V1=', 'C2=', 'V2=']
+    if len(tokens) >= len(tags) and all(t.isdigit() for t in tokens[:len(tags)]):
+        for i, tag in enumerate(tags):
+            tokens[i] = tag + tokens[i]
+    return tokens
+
+
 def whitespace_detokenizer(tokens, lower=False):
     tokens_capitalized = []
     title = True
@@ -65,4 +76,5 @@ TOKENIZERS = {
     'character': (character_tokenizer, character_detokenizer),
     'unigram': (basic_unigram_tokenizer, basic_unigram_detokenizer),
     'whitespace': (whitespace_tokenizer, whitespace_detokenizer),
+    'deal_tag': (deal_tag_tokenizer, whitespace_detokenizer),
 }
