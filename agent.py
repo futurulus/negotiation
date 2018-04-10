@@ -226,7 +226,8 @@ class TwoModelAgent(Agent):
             if self.options.verbosity + inner_verbosity >= 5:
                 print(f'      {indent}--RESPONSE [{self.agent_id}]: {repr(response)}')
             if response == '<selection>':
-                inst = self.get_input_instance(self.game, dialogue, invert=invert)
+                inst = self.get_input_instance(self.game, dialogue + ['YOU: <selection>'],
+                                               invert=invert)
                 with thutils.device_context(sel_model.options.device):
                     output = sel_model.predict([inst], random=True, verbosity=0)[0]
                 if self.options.verbosity + inner_verbosity >= 5:
