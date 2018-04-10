@@ -83,7 +83,7 @@ class RuleBasedAgent(agent.Agent):
             train_examples_paths='cocoa-negotiation/fb-negotiation/data/rulebased-transcripts.json',
             train_max_examples=1,
             test_max_examples=0,
-            max_turns=20,
+            max_turns=self.options.max_dialogue_len,
             agents=['rulebased', 'rulebased'],
             templates='cocoa-negotiation/fb-negotiation/templates.pkl',
             policy='cocoa-negotiation/fb-negotiation/model.pkl',
@@ -124,6 +124,9 @@ class RuleBasedAgent(agent.Agent):
         if self.session is None:
             self.session = self.agent.new_session(0, self.scenario.kbs[0])
             self.agent_num = 0
+
+        if self.time > self.options.max_dialogue_len:
+            return []
 
         event = self.session.send()
         self.time += 1
