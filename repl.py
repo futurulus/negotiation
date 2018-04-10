@@ -41,6 +41,12 @@ parser.add_argument('--goal_directed_a', type=config.boolean, default=False,
 parser.add_argument('--goal_directed_b', type=config.boolean, default=False,
                     help='If `True`, use goal-directed decoding (maximum reward over rollouts) '
                          'in model B.')
+parser.add_argument('--both_sides_a', type=config.boolean, default=False,
+                    help='If `True`, the response model for A should simulate both sides of the '
+                         'dialogue goal-directed decoding (requires --goal_directed_a).')
+parser.add_argument('--both_sides_b', type=config.boolean, default=False,
+                    help='If `True`, the response model for B should simulate both sides of the '
+                         'dialogue goal-directed decoding (requires --goal_directed_b).')
 parser.add_argument('--contexts', metavar='CONTEXT_FILE', default='data/selfplay.txt',
                     help='Text file giving game contexts, each consisting of two lines in the '
                          'format "na va nb vb nc vc".')
@@ -56,6 +62,10 @@ def repl():
     models_b = []
     assert len(options.load_a) == len(options.device_a), (options.load_a, options.device_a)
     assert len(options.load_b) == len(options.device_b), (options.load_b, options.device_b)
+    assert (options.goal_directed_a or not options.both_sides_a), \
+        '--both_sides_a requires --goal_directed_a'
+    assert (options.goal_directed_b or not options.both_sides_b), \
+        '--both_sides_b requires --goal_directed_b'
     for a_filename, device in zip(options.load_a, options.device_a):
         if options.verbosity >= 2:
             print(f'Loading {a_filename}...')
@@ -106,7 +116,8 @@ def repl():
                 current_agent = agent_a if a_goes else agent_b
                 other_agent = agent_b if a_goes else agent_a
                 goal_dir = options.goal_directed_a if a_goes else options.goal_directed_b
-                response = current_agent.act(goal_directed=goal_dir)
+                both_sides = options.both_sides_a if a_goes else options.both_sides_b
+                response = current_agent.act(goal_directed=goal_dir, both_sides=both_sides)
                 current_agent.commit(response)
                 other_agent.observe(response)
                 if isinstance(response, list):

@@ -35,7 +35,7 @@ class Agent():
     def new_game(self, game):
         pass
 
-    def act(self, goal_directed=False):
+    def act(self, goal_directed=False, both_sides=False):
         raise NotImplementedError
 
     def commit(self, action):
@@ -77,7 +77,7 @@ class HumanAgent(Agent):
         self.game = game
         self.selection = None
 
-    def act(self, goal_directed='ignored'):
+    def act(self, goal_directed='ignored', both_sides='ignored'):
         while True:
             line = input('YOU: ').lower()
             if self.selection is not None:
@@ -175,13 +175,14 @@ class TwoModelAgent(Agent):
     def sample_action(self):
         return self.act(dialogue=self.dialogue)
 
-    def dialogue_rollout(self, candidate):
+    def dialogue_rollout(self, candidate, both_sides):
         rollout = list(self.dialogue)
         sel_singleton = list(self.sel_singleton)
-        self.commit(candidate)
+        self.commit(candidate, dialogue=rollout, sel_singleton=sel_singleton)
         invert = True
+        end = False
         while True:
-            action = self.act(goal_directed=False, invert=invert,
+            action = self.act(both_sides=both_sides, invert=invert,
                               dialogue=rollout, sel_singleton=sel_singleton)
             if invert:
                 if self.observe(action, dialogue=rollout, sel_singleton=sel_singleton):
@@ -192,12 +193,15 @@ class TwoModelAgent(Agent):
                 self.commit(action, dialogue=rollout, sel_singleton=sel_singleton)
                 if end:
                     break
+            invert = not invert
         return compute_outcome(self.game, sel_singleton[0], action)
 
-    def act(self, goal_directed=False, invert=False, dialogue=None, sel_singleton=None):
+    def act(self, goal_directed=False, both_sides=False,
+            invert=False, dialogue=None, sel_singleton=None):
         if goal_directed:
             return self.goal_directed_action(self.options.goal_candidates,
-                                             self.options.goal_rollouts)
+                                             self.options.goal_rollouts,
+                                             both_sides=both_sides)
 
         if dialogue is None:
             dialogue = self.dialogue
@@ -210,14 +214,15 @@ class TwoModelAgent(Agent):
             sel_singleton = self.sel_singleton
         resp_model, sel_model = self.models
 
-        inst = self.get_input_instance(self.game, dialogue, invert=invert)
         if sel_singleton[0] is not None:
+            inst = self.get_input_instance(self.game, dialogue, invert=invert)
             with thutils.device_context(sel_model.options.device):
                 output = sel_model.predict([inst], random=True, verbosity=0)[0]
             if self.options.verbosity + inner_verbosity >= 5:
                 print(f'      {indent}--OUTPUT [{self.agent_id}]: {repr(output)}')
             return self.parse_selection(output, self.game[0])
         else:
+            inst = self.get_input_instance(self.game, dialogue, invert=(invert and not both_sides))
             if len(dialogue) >= self.options.max_dialogue_len:
                 response = '<selection>'
             else:
@@ -288,7 +293,7 @@ class TwoModelAgent(Agent):
             print(result.__dict__)
         return result
 
-    def goal_directed_action(self, num_candidates, num_rollouts):
+    def goal_directed_action(self, num_candidates, num_rollouts, both_sides):
         candidates = [self.sample_action() for _ in range(num_candidates)]
         if self.options.verbosity >= 5:
             for candidate in candidates:
@@ -297,7 +302,8 @@ class TwoModelAgent(Agent):
         best_candidates = []
         best_ave_reward = 0.0
         for candidate in candidates:
-            outcomes = [self.dialogue_rollout(candidate) for _ in range(num_rollouts)]
+            outcomes = [self.dialogue_rollout(candidate, both_sides=both_sides)
+                        for _ in range(num_rollouts)]
             ave_reward = np.mean([our_outcome[1] for our_outcome, _ in outcomes])
             if self.options.verbosity >= 5:
                 print(f'        --AVE_REWARD [{self.agent_id}]: {ave_reward} <= '
