@@ -310,7 +310,7 @@ class RNNEncoder(th.nn.Module):
             a.enc_h_out = enc_state
             result = (a.enc_out,
                       (self.concat_directions(a.enc_h_out),))
-        if self.use_attention:
+        if hasattr(self, 'use_attention') and self.use_attention:
             h_size = result[1][0].size()
             attn_out, attn_weights = self.attention(result[0], src_lengths)
             assert attn_out.size() == h_size[1:], (attn_out.size(), h_size[1:])
