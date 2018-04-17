@@ -198,7 +198,7 @@ class TwoModelAgent(Agent):
                 output = sel_model.predict([inst], random=True, verbosity=0)[0]
             if self.options.verbosity + inner_verbosity >= 5:
                 print(f'      {indent}--OUTPUT [{self.agent_id}]: {repr(output)}')
-            return self.parse_selection(output, self.game[0])
+            return parse_selection(output, self.game[0])
         else:
             inst = self.get_input_instance(self.game, dialogue, invert=(invert and not both_sides))
             if len(dialogue) >= self.options.max_dialogue_len:
@@ -215,7 +215,7 @@ class TwoModelAgent(Agent):
                     output = sel_model.predict([inst], random=True, verbosity=0)[0]
                 if self.options.verbosity + inner_verbosity >= 5:
                     print(f'      {indent}--OUTPUT [{self.agent_id}]: {repr(output)}')
-                return self.parse_selection(output, self.game[0])
+                return parse_selection(output, self.game[0])
             else:
                 return response
 
@@ -301,17 +301,6 @@ class TwoModelAgent(Agent):
                     if not has_double_zeros(r, game[1])]
         return possible[rng.randint(len(possible))]
 
-    def parse_selection(self, line, counts):
-        if line.startswith('<'):
-            return []
-
-        import re
-        match = re.search(r'item0=(\d+) item1=(\d+) item2=(\d+)', line)
-        if not match:
-            return []
-        else:
-            return [max(0, min(c, int(s))) for c, s in zip(counts, match.groups())]
-
     def outcome(self, outcome):
         if self.options.verbosity >= 5:
             print(f"  --GAME [{self.agent_id}]: {self.game}")
@@ -345,8 +334,131 @@ class RSAAgent(TwoModelAgent):
         return Instance(**inst_dict)
 
 
+class FBReproAgent(Agent):
+    def start(self):
+        self.negotiator = self.models[0].model.module
+        self.vectorizer = self.models[0].model.vectorizer
+        self.tokenize, self.detokenize = tokenizers.TOKENIZERS[self.models[0].options.tokenizer]
+        self.eos = th.LongTensor(self.vectorizer.resp_vec.vectorize(['<eos>'])[0])[0]
+        self.you = th.LongTensor(self.vectorizer.resp_vec.vectorize(['YOU:'])[0])[0]
+        self.them = th.LongTensor(self.vectorizer.resp_vec.vectorize(['THEM:'])[0])[0]
+
+    def new_game(self, game):
+        if not hasattr(self, 'agent_id'):
+            self.agent_id = random_agent_name()
+
+        with self.use_device():
+            goal_indices, self.feasible_sels, self.num_feasible_sels = self.vectorize_game(game)
+            self.negotiator.context(goal_indices)
+        self.game = game
+        self.sel_singleton = [None]
+
+    def vectorize_game(self, game):
+        input_tokens = [str(e) for pair in zip(game[0], game[1]) for e in pair]
+        partner_tokens = [str(e) for pair in zip(game[0], game[2]) for e in pair]
+        (goal_indices, partner_,
+         resp_, resp_len_,
+         sel_, feasible_sels,
+         num_feasible_sels) = self.vectorizer.vectorize((input_tokens,
+                                                        ['<dialogue>', '</dialogue>'],
+                                                        ['<no_agreement>'] * 3,
+                                                        partner_tokens))
+        return (thutils.to_torch(goal_indices)[None, :],
+                thutils.to_torch(feasible_sels)[None, :],
+                thutils.to_torch(num_feasible_sels)[None, :])
+
+    def act(self, goal_directed=False, both_sides=False,
+            invert=False, dialogue=None, sel_singleton=None):
+        if goal_directed or both_sides:
+            raise NotImplementedError
+        if sel_singleton is None:
+            sel_singleton = self.sel_singleton
+
+        with self.use_device():
+            if sel_singleton[0] is not None:
+                action = self.make_selection()
+            else:
+                output_predict, output_score = self.negotiator.speak(self.you, self.eos)
+                (resp_indices, resp_len) = output_predict['sample']
+
+                if is_selection(self.vectorizer, resp_indices, resp_len):
+                    action = self.make_selection()
+                else:
+                    action = self.vectorizer.resp_vec.unvectorize(thutils.to_numpy(resp_indices)[0],
+                                                                  thutils.to_numpy(resp_len)[0])
+                    action = self.detokenize(action[1:])
+
+        if self.options.verbosity >= 5:
+            print(f'      --ACT [{self.agent_id}]: {repr(action)}')
+        return action
+
+    def make_selection(self):
+        empty_sel_indices = th.autograd.Variable(cu(th.LongTensor([0])))
+        sel_predict, sel_score = self.negotiator.selection(empty_sel_indices,
+                                                           self.feasible_sels,
+                                                           self.num_feasible_sels)
+        return parse_selection(' '.join(self.vectorizer.sel_vec.unvectorize(
+            thutils.to_numpy(sel_predict['sample'])[0]
+        )), self.game[0])
+
+    def commit(self, action, dialogue=None, sel_singleton=None):
+        if sel_singleton is None:
+            sel_singleton = self.sel_singleton
+
+        if isinstance(action, list):
+            if sel_singleton[0] is not None:
+                sel_singleton[0] = action
+            return
+
+        with self.use_device():
+            resp_indices, resp_len = self.vectorize_response(action, self.you)
+            self.negotiator.listen(resp_indices, resp_len)
+
+    def observe(self, result, dialogue=None, sel_singleton=None):
+        if sel_singleton is None:
+            sel_singleton = self.sel_singleton
+
+        if isinstance(result, list):
+            if sel_singleton[0] is None:
+                sel_singleton[0] = result
+                result = '<selection>'
+            else:
+                return True
+
+        if self.options.verbosity >= 5:
+            print(f'      --OBSERVE [{self.agent_id}]: {repr(result)}')
+
+        with self.use_device():
+            resp_indices, resp_len = self.vectorize_response(result, self.them)
+            self.negotiator.listen(resp_indices, resp_len)
+
+        return False
+
+    def vectorize_response(self, response, you_them):
+        tag = th.autograd.Variable(cu(th.LongTensor([[self.you]])))
+        resp_indices, resp_len = self.vectorizer.resp_vec.vectorize(self.tokenize(response))
+        tagged_resp_indices = th.cat([tag.expand(1, 1),
+                                      thutils.to_torch(resp_indices)[None, :]], 1)
+        return (tagged_resp_indices, thutils.to_torch(resp_len + 1))
+
+    def use_device(self):
+        return thutils.device_context(self.models[0].options.device)
+
+
 def invert_proposal(response, game):
     return [c - s for c, s in zip(game[0], response)]
+
+
+def parse_selection(line, counts):
+    if line.startswith('<'):
+        return []
+
+    import re
+    match = re.search(r'item0=(\d+) item1=(\d+) item2=(\d+)', line)
+    if not match:
+        return []
+    else:
+        return [max(0, min(c, int(s))) for c, s in zip(counts, match.groups())]
 
 
 def has_double_zeros(their_rewards, our_rewards):
@@ -370,7 +482,8 @@ def compute_outcome(game, proposal_a, response_a):
 
 AGENTS = {
     c.__name__: c
-    for c in [HumanAgent, TwoModelAgent, RSAAgent, RuleBasedAgent]
+    for c in [HumanAgent, TwoModelAgent, RSAAgent, RuleBasedAgent,
+              FBReproAgent]
 }
 
 
@@ -678,7 +791,7 @@ class RLNegotiator(th.nn.Module):
 
             dialogue.append(((me_resp_indices if my_turn else other_resp_indices), resp_len))
             policy_scores.append(policy_score)
-            if self.is_selection(me_resp_indices, resp_len):
+            if is_selection(self.vectorizer, me_resp_indices, resp_len):
                 break
 
             my_turn = not my_turn
@@ -715,9 +828,10 @@ class RLNegotiator(th.nn.Module):
         transformed[them_mask.data] = you
         return transformed
 
-    def is_selection(self, resp_indices, resp_len):
-        selection = th.LongTensor(self.vectorizer.resp_vec.vectorize(['<selection>'])[0])[0]
-        return resp_indices.data[0, 0] == selection and resp_len.data[0] == 1
+
+def is_selection(vectorizer, resp_indices, resp_len):
+    selection = th.LongTensor(vectorizer.resp_vec.vectorize(['<selection>'])[0])[0]
+    return resp_indices.data[0, 0] == selection and resp_len.data[0] == 1
 
 
 def compute_reward(sel, other_sel, goal_indices):

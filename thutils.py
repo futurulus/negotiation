@@ -72,6 +72,21 @@ def to_native(obj):
     return obj.cpu().tolist()
 
 
+def to_torch(obj):
+    import numpy as np
+    if isinstance(obj, numbers.Number):
+        obj = np.array([obj])
+
+    if isinstance(obj, np.ndarray):
+        result = th.from_numpy(obj)
+    elif isinstance(obj, (list, tuple)):
+        result = type(obj)(to_torch(e) for e in obj)
+    elif isinstance(obj, dict):
+        result = {k: to_torch(v) for k, v in obj.items()}
+
+    return th.autograd.Variable(maybe_cuda(result))
+
+
 def log_softmax(x, dim=-1):
     return th.nn.LogSoftmax()(x.transpose(0, dim)).transpose(0, dim)
 
