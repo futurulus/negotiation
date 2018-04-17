@@ -12,14 +12,14 @@ import pickle
 from stanza.research import output
 from stanza.monitoring import progress
 
-import agent
+import agents
 from vectorizers import all_possible_subcounts
 import thutils
 
 parser = config.get_options_parser()
-parser.add_argument('--agent_a', default='HumanAgent', choices=agent.AGENTS,
+parser.add_argument('--agent_a', default='HumanAgent', choices=agents.AGENTS,
                     help='Class name for agent A in dialogue simulation.')
-parser.add_argument('--agent_b', default='TwoModelAgent', choices=agent.AGENTS,
+parser.add_argument('--agent_b', default='TwoModelAgent', choices=agents.AGENTS,
                     help='Class name for agent B in dialogue simulation.')
 parser.add_argument('--device_a', default=[], nargs='*',
                     help='The devices to use in PyTorch for model A ("cpu" or "gpu[0-n]"). If None, '
@@ -82,8 +82,8 @@ def repl():
                 models_b.append(pickle.load(infile))
                 assert norm_device(models_b[-1].options.device) == norm_device(device), \
                     (b_filename, models_b[-1].options.device)
-    agent_a = agent.AGENTS[options.agent_a](options, models_a)
-    agent_b = agent.AGENTS[options.agent_b](options, models_b)
+    agent_a = agents.AGENTS[options.agent_a](options, models_a)
+    agent_b = agents.AGENTS[options.agent_b](options, models_b)
 
     agent_a.start()
     agent_b.start()
@@ -121,7 +121,7 @@ def repl():
                 current_agent.commit(response)
                 other_agent.observe(response)
                 if isinstance(response, list):
-                    response = response if a_goes else agent.invert_proposal(response, game)
+                    response = response if a_goes else agents.invert_proposal(response, game)
                     if proposal_a is None:
                         proposal_a = response
                     else:
@@ -131,12 +131,12 @@ def repl():
 
                 a_goes = not a_goes
 
-            outcome_a, outcome_b = agent.compute_outcome(game, proposal_a, response)
+            outcome_a, outcome_b = agents.compute_outcome(game, proposal_a, response)
             agent_a.outcome(outcome_a)
             agent_b.outcome(outcome_b)
             outcomes_a.append(outcome_a)
             dialogues.append(dialogue)
-            if outcome_a[0] == agent.AGREE:
+            if outcome_a[0] == agents.AGREE:
                 deals_a.append(proposal_a)
             else:
                 deals_a.append(None)
@@ -178,7 +178,7 @@ def analyze_games(games, outcomes, dialogues, deals_a):
     results = {}
 
     results['sim.num_games'] = len(games)
-    agreement = [int(outcome[0] == agent.AGREE) for outcome in outcomes]
+    agreement = [int(outcome[0] == agents.AGREE) for outcome in outcomes]
     results['sim.agreement.mean'] = float(np.mean(agreement))
     results['sim.agreement.std'] = float(np.std(agreement))
     results['sim.agreement.sum'] = float(np.sum(agreement))
@@ -186,7 +186,7 @@ def analyze_games(games, outcomes, dialogues, deals_a):
     results['sim.rewards_a.mean'] = float(np.mean(rewards_a))
     results['sim.rewards_a.std'] = float(np.std(rewards_a))
     results['sim.rewards_a.sum'] = float(np.sum(rewards_a))
-    rewards_a_agree = [outcome[1] for outcome in outcomes if outcome[0] == agent.AGREE]
+    rewards_a_agree = [outcome[1] for outcome in outcomes if outcome[0] == agents.AGREE]
     results['sim.rewards_a_agree.mean'] = float(np.mean(rewards_a_agree))
     results['sim.rewards_a_agree.std'] = float(np.std(rewards_a_agree))
     results['sim.rewards_a_agree.sum'] = float(np.sum(rewards_a_agree))
@@ -194,14 +194,14 @@ def analyze_games(games, outcomes, dialogues, deals_a):
     results['sim.rewards_b.mean'] = float(np.mean(rewards_b))
     results['sim.rewards_b.std'] = float(np.std(rewards_b))
     results['sim.rewards_b.sum'] = float(np.sum(rewards_b))
-    rewards_b_agree = [outcome[2] for outcome in outcomes if outcome[0] == agent.AGREE]
+    rewards_b_agree = [outcome[2] for outcome in outcomes if outcome[0] == agents.AGREE]
     results['sim.rewards_b_agree.mean'] = float(np.mean(rewards_b_agree))
     results['sim.rewards_b_agree.std'] = float(np.std(rewards_b_agree))
     results['sim.rewards_b_agree.sum'] = float(np.sum(rewards_b_agree))
 
     pareto_optimal = [int(is_pareto_optimal(game, deal_a))
                       for game, deal_a, outcome_a in zip(games, deals_a, outcomes)
-                      if outcome_a[0] == agent.AGREE]
+                      if outcome_a[0] == agents.AGREE]
     results['sim.pareto_optimal.mean'] = float(np.mean(pareto_optimal))
     results['sim.pareto_optimal.std'] = float(np.std(pareto_optimal))
     results['sim.pareto_optimal.sum'] = float(np.sum(pareto_optimal))
@@ -224,9 +224,9 @@ def is_pareto_optimal(game, deal_a):
     False
     '''
     counts, values_a, values_b = game
-    _, reward_a, reward_b = agent.compute_outcome(game, deal_a, deal_a)[0]
+    _, reward_a, reward_b = agents.compute_outcome(game, deal_a, deal_a)[0]
     for alt_deal in all_possible_subcounts(game[0]):
-        _, alt_reward_a, alt_reward_b = agent.compute_outcome(game, alt_deal, alt_deal)[0]
+        _, alt_reward_a, alt_reward_b = agents.compute_outcome(game, alt_deal, alt_deal)[0]
         if alt_reward_a > reward_a and alt_reward_b >= reward_b:
             return False
         if alt_reward_a >= reward_a and alt_reward_b > reward_b:

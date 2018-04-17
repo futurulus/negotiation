@@ -127,8 +127,9 @@ class RuleBasedAgent(agent.Agent):
             ],
         }
 
-    def act(self, goal_directed=False, invert=False, dialogue=None, sel_singleton=None):
-        if goal_directed:
+    def act(self, goal_directed=False, both_sides=False,
+            invert=False, dialogue=None, sel_singleton=None):
+        if goal_directed or both_sides:
             raise NotImplementedError
 
         if self.session is None:

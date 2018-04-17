@@ -9,7 +9,7 @@ import neural
 import seq2seq
 import vectorizers
 import tokenizers
-from agent import RLNegotiator, Negotiator, SupervisedLoss, RLLoss
+from agents import RLNegotiator, Negotiator, SupervisedLoss, RLLoss
 
 
 parser = config.get_options_parser()
