@@ -10,6 +10,7 @@ import neural
 import seq2seq
 import tokenizers
 from agent import Agent, random_agent_name
+from baselines import RuleBasedAgent  # NOQA: prevent cyclic import
 from vectorizers import MAX_FEASIBLE, NUM_ITEMS, GOAL_SIZE, all_possible_subcounts
 import thutils
 from thutils import index_sequence, lrange, log_softmax, maybe_cuda as cu
@@ -342,9 +343,6 @@ class RSAAgent(TwoModelAgent):
         inst_dict['output'] = \
             f'{counts[0]} {rewards[0]} {counts[1]} {rewards[1]} {counts[2]} {rewards[2]}'
         return Instance(**inst_dict)
-
-
-from baselines import RuleBasedAgent  # NOQA: prevent cyclic import
 
 
 def invert_proposal(response, game):
