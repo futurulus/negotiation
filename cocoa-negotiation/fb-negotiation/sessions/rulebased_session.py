@@ -91,13 +91,13 @@ class RulebasedSession(BaseRulebasedSession):
         my_points_by_them = self.get_points(partner_proposal[self.agent])
 
         if (my_points_by_them >= min(self.config.target, my_points) and my_points_by_them <= 10):
-            self.state.my_proposal = copy.deepcopy(self.state.partner_proposal)
+            self.state.my_proposal = copy.deepcopy(partner_proposal)
             return self.clarify()
 
         compromised_offer = self.compromise(my_offer)
         compromised_points = self.get_points(compromised_offer)
         if compromised_points <= my_points_by_them:
-            compromised_offer = copy.deepcopy(self.state.partner_proposal[self.agent])
+            compromised_offer = copy.deepcopy(partner_proposal[self.agent])
             compromised_points = my_points_by_them
 
         if self.get_points(compromised_offer) < self.config.bottomline:
