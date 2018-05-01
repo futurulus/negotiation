@@ -358,7 +358,7 @@ def to_torch(obj):
 
 
 def log_softmax(x, dim=-1):
-    return th.nn.LogSoftmax()(x.transpose(0, dim)).transpose(0, dim)
+    return th.nn.LogSoftmax(dim=dim)(x)
 
 
 _device = 'cpu'

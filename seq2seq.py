@@ -428,7 +428,7 @@ class Attention(th.nn.Module):
         attn_mask = th.autograd.Variable(cu(
             th.log((lrange(max_len)[None, :] < src_lengths.data[:, None]).float())
         ))
-        a.attn_weights = th.exp(th.nn.LogSoftmax()(a.attn_scores + attn_mask))
+        a.attn_weights = th.exp(th.nn.LogSoftmax(dim=1)(a.attn_scores + attn_mask))
         assert a.attn_weights.size() == (batch_size, max_len), \
             (a.attn_weights.size(), (batch_size, max_len))
         a.attn_out = th.matmul(a.attn_weights[:, None, :], outputs)[:, 0, :]
@@ -623,7 +623,7 @@ class RNNDecoder(th.nn.Module):
 
         a.dec_out, dec_state = self.decoder(input_embed, enc_state)
         a.out = self.output(a.dec_out)
-        log_softmax = th.nn.LogSoftmax()(a.out.transpose(2, 0)).transpose(2, 0)
+        log_softmax = th.nn.LogSoftmax(dim=2)(a.out)
         if not isinstance(dec_state, tuple):
             dec_state = (dec_state,)
         return log_softmax, (a.dec_out, dec_state)
