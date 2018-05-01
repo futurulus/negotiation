@@ -10,7 +10,7 @@ from stanza.research.rng import get_rng
 import neural
 import vectorizers
 import tokenizers
-from thutils import lrange, index_sequence, maybe_cuda as cu
+from thutils import lrange, index_sequence, varlen_rnn, maybe_cuda as cu
 
 rng = get_rng()
 
@@ -301,7 +301,7 @@ class RNNEncoder(th.nn.Module):
         in_embed = self.enc_embedding(src_indices[:, :max_len])
         batch_size = src_indices.size()[0]
         init = generate_rnn_state(self, self.h_init, self.c_init, batch_size)
-        a.enc_out, enc_state = self.cell(in_embed, init)
+        a.enc_out, enc_state = varlen_rnn(self.cell, in_embed, src_lengths.data, init)
         if self.use_c:
             (a.enc_h_out, a.enc_c_out) = enc_state
             result = (a.enc_out,
