@@ -29,7 +29,9 @@ class TorchModel():
         self.get_options()
         self.module = cu(module)
         self.loss = cu(loss)
-        self.optimizer = optimizer(self.module.parameters(), **optimizer_params)
+        self.optimizer_class = optimizer
+        self.optimizer_params = optimizer_params
+        self.build_optimizer()
         self.vectorizer = vectorizer
         summary_path = config.get_file_path('monitoring.tfevents')
         if summary_path:
@@ -38,6 +40,15 @@ class TorchModel():
             self.summary_writer = None
         self.step = 0
         self.last_timestamp = datetime.datetime.now()
+
+    def build_optimizer(self):
+        if not hasattr(self, 'optimizer_class') or not hasattr(self, 'optimizer_params'):
+            import warnings
+            warnings.warn('Cannot recreate optimizer: old pickle file does not have '
+                          'saved optimizer parameters.')
+            self.optimizer = None
+            return
+        self.optimizer = self.optimizer_class(self.module.parameters(), **self.optimizer_params)
 
     def get_options(self):
         if not hasattr(self, 'options'):
