@@ -41,6 +41,18 @@ def index_sequence(seq, idx):
                idx]
 
 
+INT_TENSOR_TYPES = (
+    th.LongTensor,
+    th.IntTensor,
+    th.ShortTensor,
+    th.ByteTensor,
+    th.cuda.LongTensor,
+    th.cuda.IntTensor,
+    th.cuda.ShortTensor,
+    th.cuda.ByteTensor,
+)
+
+
 def varlen_rnn(cell, input, lengths, hidden):
     '''
     Handles running a variable-length input through an RNN using PyTorch's PackedSequence
@@ -184,10 +196,10 @@ def sort_and_pack(input, lengths, batch_first=False):
     '''  # NOQA: verbatim trailing whitespace
     if isinstance(lengths, list):
         lengths = maybe_cuda(th.FloatTensor(lengths))
-    elif isinstance(lengths, th.LongTensor):
+    elif isinstance(lengths, INT_TENSOR_TYPES):
         lengths = lengths.float()
 
-    lengths_sorted, sort_indices = th.sort(maybe_cuda(th.FloatTensor(lengths)), 0, descending=True)
+    lengths_sorted, sort_indices = th.sort(lengths, 0, descending=True)
     input_sorted = index_sorted(input, sort_indices, batch_first=batch_first)
 
     packed = rnn.pack_padded_sequence(input_sorted, lengths_sorted.tolist(),
@@ -265,7 +277,7 @@ def index_sorted(x, indices, batch_first=False):
     [torch.FloatTensor of size 3x3x3]
     <BLANKLINE>
     '''  # NOQA: verbatim trailing whitespace
-    if isinstance(indices, (th.LongTensor, th.ByteTensor)):
+    if isinstance(indices, INT_TENSOR_TYPES):
         indices = indices.tolist()
     assert len(indices) == 0 or not isinstance(indices[0], list), \
         'indices is not 1-dimensional [{} x {} x ...] (varlen_rnn and sort_and_pack do not ' \
@@ -303,7 +315,7 @@ def unsort(sorted, indices, batch_first=False):
     '''
     if isinstance(indices, list):
         indices = maybe_cuda(th.FloatTensor(indices))
-    elif isinstance(indices, th.LongTensor):
+    elif isinstance(indices, INT_TENSOR_TYPES):
         indices = indices.float()
 
     _, indices_inverse = th.sort(indices, 0)

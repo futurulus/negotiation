@@ -339,9 +339,12 @@ class FBReproAgent(Agent):
         self.negotiator = self.models[0].model.module
         self.vectorizer = self.models[0].model.vectorizer
         self.tokenize, self.detokenize = tokenizers.TOKENIZERS[self.models[0].options.tokenizer]
-        self.eos = th.LongTensor(self.vectorizer.resp_vec.vectorize(['<eos>'])[0])[0]
-        self.you = th.LongTensor(self.vectorizer.resp_vec.vectorize(['YOU:'])[0])[0]
-        self.them = th.LongTensor(self.vectorizer.resp_vec.vectorize(['THEM:'])[0])[0]
+        with self.use_device():
+            resp_vec = self.vectorizer.resp_vec
+            self.eos = cu(th.LongTensor(resp_vec.vectorize(['<eos>'])[0])[0])
+            self.you = cu(th.LongTensor(resp_vec.vectorize(['YOU:'])[0])[0])
+            self.them = cu(th.LongTensor(resp_vec.vectorize(['THEM:'])[0])[0])
+            self.sel_token = cu(th.LongTensor(resp_vec.vectorize(['<selection>'])[0])[0])
 
     def new_game(self, game):
         if not hasattr(self, 'agent_id'):
@@ -352,6 +355,7 @@ class FBReproAgent(Agent):
             self.negotiator.context(goal_indices)
         self.game = game
         self.sel_singleton = [None]
+        self.num_dialogue_turns = 0
 
     def vectorize_game(self, game):
         input_tokens = [str(e) for pair in zip(game[0], game[1]) for e in pair]
@@ -375,13 +379,14 @@ class FBReproAgent(Agent):
             sel_singleton = self.sel_singleton
 
         with self.use_device():
-            if sel_singleton[0] is not None:
+            if sel_singleton[0] is not None or \
+                    self.num_dialogue_turns >= self.options.max_dialogue_len:
                 action = self.make_selection()
             else:
                 output_predict, output_score = self.negotiator.speak(self.you, self.eos)
                 (resp_indices, resp_len) = output_predict['sample']
 
-                if is_selection(self.vectorizer, resp_indices, resp_len):
+                if is_selection(resp_indices, resp_len, self.sel_token):
                     action = self.make_selection()
                 else:
                     action = self.vectorizer.resp_vec.unvectorize(thutils.to_numpy(resp_indices)[0],
@@ -414,6 +419,8 @@ class FBReproAgent(Agent):
             resp_indices, resp_len = self.vectorize_response(action, self.you)
             self.negotiator.listen(resp_indices, resp_len)
 
+        self.num_dialogue_turns += 1
+
     def observe(self, result, dialogue=None, sel_singleton=None):
         if sel_singleton is None:
             sel_singleton = self.sel_singleton
@@ -432,10 +439,11 @@ class FBReproAgent(Agent):
             resp_indices, resp_len = self.vectorize_response(result, self.them)
             self.negotiator.listen(resp_indices, resp_len)
 
+        self.num_dialogue_turns += 1
         return False
 
     def vectorize_response(self, response, you_them):
-        tag = th.autograd.Variable(cu(th.LongTensor([[self.you]])))
+        tag = th.autograd.Variable(cu(th.LongTensor([[you_them]])))
         resp_indices, resp_len = self.vectorizer.resp_vec.vectorize(self.tokenize(response))
         tagged_resp_indices = th.cat([tag.expand(1, 1),
                                       thutils.to_torch(resp_indices)[None, :]], 1)
@@ -615,6 +623,14 @@ class Negotiator(th.nn.Module):
         )
         (dialogue_repr_seq, dec_state) = response_output['target']
         if persist:
+            '''
+            if hasattr(a, 'dialogue_repr_seq'):
+                print((resp_indices[0, :20], resp_len[0]))
+                print(f'      {self.dec_state[0].data[0, 0, 0]:.4f} -> '
+                      f'      {dec_state[0].data[0, 0, 0]:.4f}')
+                print(f'      {a.dialogue_repr_seq.data[0, 0, 0]:.4f} -> '
+                      f'      {dialogue_repr_seq.data[0, 0, 0]:.4f}')
+            '''
             a.dialogue_repr_seq, self.dec_state = dialogue_repr_seq, dec_state
         assert dialogue_repr_seq.dim() == 3, dialogue_repr_seq.size()
         assert dialogue_repr_seq.size()[:2] == (batch_size, max_resp_len - 1), \
@@ -655,11 +671,11 @@ class Negotiator(th.nn.Module):
             (a.feasible_item_scores.size(), batch_size)
 
         num_feasible_mask = th.autograd.Variable(cu(
-            (lrange(a.feasible_item_scores.size()[1])[None, :, None] >
+            (lrange(a.feasible_item_scores.size()[1])[None, :, None] <=
              num_feasible_sels.data[:, None, None]).float()
         ))
         a.feasible_masked = a.feasible_item_scores + th.log(num_feasible_mask)
-        a.full_selection_scores = log_softmax(a.feasible_item_scores.sum(dim=2))
+        a.full_selection_scores = log_softmax(a.feasible_item_scores.sum(dim=2), dim=1)
         assert a.full_selection_scores.size() == (batch_size, MAX_FEASIBLE + 3), \
             (a.full_selection_scores.size(), batch_size)
 
@@ -706,7 +722,9 @@ class Negotiator(th.nn.Module):
         return response_predict, response_score
 
     def listen(self, resp_indices, resp_len):
+        seq2seq.RNNDecoder.debug = 'a'
         self.dialogue(resp_indices, resp_len, predict=False)
+        del seq2seq.RNNDecoder.debug
 
 
 class SupervisedLoss(th.nn.Module):
@@ -755,8 +773,8 @@ class RLNegotiator(th.nn.Module):
         self.negotiator = negotiator
         self.partner = partner
         self.vectorizer = vectorizer
-        self.eos = th.LongTensor(self.vectorizer.resp_vec.vectorize(['<eos>'])[0])[0]
-        self.you = th.LongTensor(self.vectorizer.resp_vec.vectorize(['YOU:'])[0])[0]
+        self.eos = cu(th.LongTensor(self.vectorizer.resp_vec.vectorize(['<eos>'])[0])[0])
+        self.you = cu(th.LongTensor(self.vectorizer.resp_vec.vectorize(['YOU:'])[0])[0])
 
         self.epsilon = options.rl_epsilon
         self.max_dialogue_len = options.max_dialogue_len
@@ -791,7 +809,7 @@ class RLNegotiator(th.nn.Module):
 
             dialogue.append(((me_resp_indices if my_turn else other_resp_indices), resp_len))
             policy_scores.append(policy_score)
-            if is_selection(self.vectorizer, me_resp_indices, resp_len):
+            if is_selection(me_resp_indices, resp_len, self.sel_token):
                 break
 
             my_turn = not my_turn
@@ -829,9 +847,8 @@ class RLNegotiator(th.nn.Module):
         return transformed
 
 
-def is_selection(vectorizer, resp_indices, resp_len):
-    selection = th.LongTensor(vectorizer.resp_vec.vectorize(['<selection>'])[0])[0]
-    return resp_indices.data[0, 0] == selection and resp_len.data[0] == 1
+def is_selection(resp_indices, resp_len, sel_token):
+    return resp_indices.data[0, 0] == sel_token and resp_len.data[0] == 1
 
 
 def compute_reward(sel, other_sel, goal_indices):

@@ -575,9 +575,14 @@ class RNNDecoder(th.nn.Module):
                                          tuple(inp.size()[1:]))
                 for inp in extra_inputs
             ]
+        #if hasattr(RNNDecoder, 'debug'):
+        #    import pdb; pdb.set_trace()
         a.log_softmax, (dec_out, dec_state) = self.decode(tgt_indices[:, :-1], enc_state,
                                                           extra_inputs=extra_inputs,
                                                           monitor=True)
+        #if hasattr(RNNDecoder, 'debug'):
+        #    print(f'    {enc_state[0][0,0,0]}->{dec_state[0][0,0,0]}')
+        #    import pdb; pdb.set_trace()
 
         a.log_prob_token = index_sequence(a.log_softmax, tgt_indices.data[:, 1:])
         a.mask = (lrange(a.log_prob_token.size()[1])[None, :] < tgt_lengths.data[:, None]).float()
